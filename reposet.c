@@ -87,6 +87,157 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 	return 0;
 }
 
+int reposet_open_image(const struct reposet *rs, const char *image)
+{
+	struct iv_list_head *lh;
+
+	iv_list_for_each (lh, &rs->repos) {
+		struct repo *r;
+		int fd;
+
+		r = iv_container_of(lh, struct repo, list);
+
+		fd = openat(r->imagedir, image, O_RDONLY);
+		if (fd < 0) {
+			if (errno != ENOENT)
+				perror("openat");
+			continue;
+		}
+
+		return fd;
+	}
+
+	return -ENOENT;
+}
+
+static int
+chunk_size(const struct reposet *rs, int imagefd, uint64_t chunk_index)
+{
+	uint8_t hash[rs->hash_size];
+	int ret;
+	char name[6 + B64SIZE(rs->hash_size) + 1];
+	struct iv_list_head *lh;
+
+	ret = xpread(imagefd, hash, rs->hash_size, chunk_index * rs->hash_size);
+	if (ret != rs->hash_size)
+		return -1;
+
+	snprintf(name, sizeof(name), "%.2x/%.2x/", hash[0], hash[1]);
+	base64enc(name + 6, hash, rs->hash_size);
+
+	iv_list_for_each (lh, &rs->repos) {
+		struct repo *r;
+		struct stat buf;
+
+		r = iv_container_of(lh, struct repo, list);
+
+		if (fstatat(r->chunkdir, name, &buf, 0) < 0) {
+			perror("fstatat");
+			continue;
+		}
+
+		return (buf.st_size < INT_MAX) ? buf.st_size : -1;
+	}
+
+	return -1;
+}
+
+static int stat_chunks(const struct reposet *rs, int imagefd, uint64_t size,
+		       uint64_t *numchunks_p, uint64_t *size_p,
+		       uint32_t *size_firstchunk_p)
+{
+	uint64_t numchunks;
+	int ret;
+
+	if ((size % rs->hash_size) != 0)
+		return -1;
+
+	numchunks = size / rs->hash_size;
+	*numchunks_p = numchunks;
+
+	if (numchunks == 0) {
+		*size_p = 0;
+		*size_firstchunk_p = 0;
+		return 0;
+	}
+
+	ret = chunk_size(rs, imagefd, 0);
+	if (ret < 0)
+		return -1;
+
+	*size_p = (numchunks - 1) * ret;
+	*size_firstchunk_p = ret;
+
+	if (numchunks > 1) {
+		ret = chunk_size(rs, imagefd, numchunks - 1);
+		if (ret < 0)
+			return -1;
+	}
+
+	*size_p += ret;
+
+	return 0;
+}
+
+int reposet_stat_image(const struct reposet *rs, int fd,
+		       struct image_info *info, struct stat *buf)
+{
+	struct stat statbuf;
+	uint64_t numchunks;
+	uint64_t size;
+	uint32_t size_firstchunk;
+	int ret;
+
+	if (fstat(fd, &statbuf) < 0) {
+		perror("fstat");
+		return -1;
+	}
+
+	ret = stat_chunks(rs, fd, statbuf.st_size, &numchunks,
+			  &size, &size_firstchunk);
+	if (ret < 0)
+		return -ENOENT;
+
+	if (info != NULL) {
+		info->numchunks = numchunks;
+		info->size = size;
+		info->size_firstchunk = size_firstchunk;
+	}
+
+	if (buf != NULL) {
+		memcpy(buf, &statbuf, sizeof(*buf));
+		buf->st_size = size;
+		buf->st_blocks = size >> 9;
+	}
+
+	return 0;
+}
+
+int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash)
+{
+	char name[6 + B64SIZE(rs->hash_size) + 1];
+	struct iv_list_head *lh;
+
+	snprintf(name, sizeof(name), "%.2x/%.2x/", hash[0], hash[1]);
+	base64enc(name + 6, hash, rs->hash_size);
+
+	iv_list_for_each (lh, &rs->repos) {
+		struct repo *r;
+		int fd;
+
+		r = iv_container_of(lh, struct repo, list);
+
+		fd = openat(r->chunkdir, name, O_RDONLY);
+		if (fd >= 0)
+			return fd;
+
+		if (errno != ENOENT)
+			perror("openat");
+	}
+
+	return -1;
+}
+
 int reposet_write_image(const struct reposet *rs, const char *image,
 			const uint8_t *hashes, uint64_t num_chunks,
 			const struct timespec *times)

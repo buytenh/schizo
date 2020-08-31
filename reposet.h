@@ -36,11 +36,24 @@ struct repo {
 	int			imagedir;
 };
 
+struct image_info {
+	uint64_t	numchunks;
+	uint64_t	size;
+	uint32_t	size_firstchunk;
+};
+
 void reposet_init(struct reposet *rs);
 
 void reposet_set_hash_size(struct reposet *rs, int hash_size);
 
 int reposet_add_repo(struct reposet *rs, const char *path);
+
+int reposet_open_image(const struct reposet *rs, const char *image);
+
+int reposet_stat_image(const struct reposet *rs, int fd,
+		       struct image_info *info, struct stat *buf);
+
+int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash);
 
 int reposet_write_image(const struct reposet *rs, const char *image,
 			const uint8_t *hashes, uint64_t num_chunks,
