@@ -48,7 +48,8 @@ void reposet_set_hash_size(struct reposet *rs, int hash_size);
 
 int reposet_add_repo(struct reposet *rs, const char *path);
 
-int reposet_open_image(const struct reposet *rs, const char *image);
+int reposet_open_image(const struct reposet *rs,
+		       const char *image, mode_t mode);
 
 int reposet_stat_image(const struct reposet *rs, int fd,
 		       struct image_info *info, struct stat *buf);
@@ -58,6 +59,10 @@ int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash);
 int reposet_write_image(const struct reposet *rs, const char *image,
 			const uint8_t *hashes, uint64_t num_chunks,
 			const struct timespec *times);
+
+int reposet_write_chunk_frombuf(const struct reposet *rs, const uint8_t *hash,
+				const uint8_t *data, int datalen,
+				const struct timespec *times);
 
 int reposet_write_chunk_fromfd(const struct reposet *rs, const uint8_t *hash,
 			       int srcfd, uint64_t off, int datalen,

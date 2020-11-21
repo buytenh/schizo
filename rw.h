@@ -75,5 +75,32 @@ static inline ssize_t xwrite(int fd, const void *buf, size_t count)
 	return processed;
 }
 
+static inline ssize_t
+xpwrite(int fd, const void *buf, size_t count, off_t offset)
+{
+	ssize_t processed;
+
+	processed = 0;
+	while (processed < count) {
+		ssize_t ret;
+
+		do {
+			ret = pwrite(fd, buf, count - processed, offset);
+		} while (ret < 0 && errno == EINTR);
+
+		if (ret < 0) {
+			perror("pwrite");
+			return processed ? processed : ret;
+		}
+
+		buf += ret;
+		offset += ret;
+
+		processed += ret;
+	}
+
+	return processed;
+}
+
 
 #endif

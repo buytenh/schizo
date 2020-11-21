@@ -87,7 +87,7 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 	return 0;
 }
 
-int reposet_open_image(const struct reposet *rs, const char *image)
+int reposet_open_image(const struct reposet *rs, const char *image, mode_t mode)
 {
 	struct iv_list_head *lh;
 
@@ -97,7 +97,7 @@ int reposet_open_image(const struct reposet *rs, const char *image)
 
 		r = iv_container_of(lh, struct repo, list);
 
-		fd = openat(r->imagedir, image, O_RDONLY);
+		fd = openat(r->imagedir, image, mode);
 		if (fd < 0) {
 			if (errno != ENOENT)
 				perror("openat");
@@ -132,12 +132,17 @@ chunk_size(const struct reposet *rs, int imagefd, uint64_t chunk_index)
 		r = iv_container_of(lh, struct repo, list);
 
 		if (fstatat(r->chunkdir, name, &buf, 0) < 0) {
-			perror("fstatat");
+			if (errno != ENOENT) {
+				fprintf(stderr, "error accessing %s: %s\n",
+					name, strerror(errno));
+			}
 			continue;
 		}
 
 		return (buf.st_size < INT_MAX) ? buf.st_size : -1;
 	}
+
+	fprintf(stderr, "can't open chunk %s\n", name);
 
 	return -1;
 }
@@ -392,6 +397,21 @@ static int reposet_write_chunk(const struct reposet *rs, const uint8_t *hash,
 	}
 
 	return copies;
+}
+
+int reposet_write_chunk_frombuf(const struct reposet *rs, const uint8_t *hash,
+				const uint8_t *data, int datalen,
+				const struct timespec *times)
+{
+	int fillcb(int fd)
+	{
+		if (xwrite(fd, data, datalen) != datalen)
+			return -1;
+
+		return 0;
+	}
+
+	return reposet_write_chunk(rs, hash, fillcb, times);
 }
 
 int reposet_write_chunk_fromfd(const struct reposet *rs, const uint8_t *hash,
