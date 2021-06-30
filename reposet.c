@@ -83,6 +83,7 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 	r->path = strdup(path);
 	r->chunkdir = chunkdir;
 	r->imagedir = imagedir;
+	r->tmpdir = -1;
 	r->clone_failed = 0;
 
 	return 0;
@@ -244,9 +245,10 @@ int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash)
 	return -1;
 }
 
-static int repo_write_file(struct repo *r, int dirfd, const char *name,
-			   int (*fillcb)(struct repo *r, int fd),
-			   const struct timespec *times)
+static int repo_write_file_tmpfile(struct repo *r, int dirfd,
+				   const char *name,
+				   int (*fillcb)(struct repo *r, int fd),
+				   const struct timespec *times)
 {
 	int fd;
 	int ret;
@@ -254,6 +256,9 @@ static int repo_write_file(struct repo *r, int dirfd, const char *name,
 
 	fd = openat(dirfd, ".", O_RDWR | O_TMPFILE, 0666);
 	if (fd < 0) {
+		if (errno == EOPNOTSUPP)
+			return -1;
+
 		perror("openat");
 		return 0;
 	}
@@ -281,6 +286,107 @@ static int repo_write_file(struct repo *r, int dirfd, const char *name,
 	close(fd);
 
 	return 1;
+}
+
+static int try_open_tmpdir(struct repo *r)
+{
+	int dir;
+
+	dir = openat(r->chunkdir, "../tmp", O_DIRECTORY);
+	if (dir < 0) {
+		if (errno == ENOENT) {
+			int ret;
+
+			ret = mkdirat(r->chunkdir, "../tmp", 0777);
+			if (ret < 0 && errno != EEXIST) {
+				perror("mkdirat");
+				return -1;
+			}
+
+			dir = openat(r->chunkdir, "../tmp", O_DIRECTORY);
+		}
+
+		if (dir < 0) {
+			perror("openat");
+			return -1;
+		}
+	}
+
+	r->tmpdir = dir;
+
+	return 0;
+}
+
+static int use_tmpdir(struct repo *r)
+{
+	if (r->tmpdir == -1 && try_open_tmpdir(r) < 0)
+		r->tmpdir = -2;
+
+	if (r->tmpdir == -2)
+		return 0;
+
+	return 1;
+}
+
+static int repo_write_file_fallback(struct repo *r, int dirfd,
+				    const char *name,
+				    int (*fillcb)(struct repo *r, int fd),
+				    const struct timespec *times)
+{
+	int fd;
+	int ret;
+
+	fd = openat(r->tmpdir, name, O_TRUNC | O_CREAT | O_RDWR, 0666);
+	if (fd < 0) {
+		perror("openat");
+		return 0;
+	}
+
+	if (fillcb(r, fd) < 0) {
+		close(fd);
+		unlinkat(r->tmpdir, name, 0);
+		return 0;
+	}
+
+	if (futimens(fd, times) < 0) {
+		perror("futimens");
+		close(fd);
+		unlinkat(r->tmpdir, name, 0);
+		return 0;
+	}
+
+	close(fd);
+
+	ret = renameat(r->tmpdir, name, dirfd, name);
+	if (ret < 0) {
+		perror("renameat");
+		unlinkat(r->tmpdir, name, 0);
+		return 0;
+	}
+
+	return 1;
+}
+
+static int repo_write_file(struct repo *r, int dirfd, const char *name,
+			   int (*fillcb)(struct repo *r, int fd),
+			   const struct timespec *times)
+{
+	int ret;
+
+	ret = -1;
+
+	if (r->tmpdir == -1)
+		ret = repo_write_file_tmpfile(r, dirfd, name, fillcb, times);
+
+	if (ret < 0) {
+		ret = 0;
+		if (use_tmpdir(r)) {
+			ret = repo_write_file_fallback(r, dirfd, name,
+						       fillcb, times);
+		}
+	}
+
+	return ret;
 }
 
 static int repo_write_image(struct repo *r, const char *image,
