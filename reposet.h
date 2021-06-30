@@ -34,6 +34,7 @@ struct repo {
 	const char		*path;
 	int			chunkdir;
 	int			imagedir;
+	int			clone_failed;
 };
 
 struct image_info {

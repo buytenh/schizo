@@ -83,6 +83,7 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 	r->path = strdup(path);
 	r->chunkdir = chunkdir;
 	r->imagedir = imagedir;
+	r->clone_failed = 0;
 
 	return 0;
 }
@@ -314,7 +315,7 @@ static int ts_before(const struct timespec *a, const struct timespec *b)
 }
 
 static int reposet_write_chunk(const struct reposet *rs, const uint8_t *hash,
-			       int (*fillcb)(int fd),
+			       int (*fillcb)(struct repo *r, int fd),
 			       const struct timespec *times)
 {
 	char dirname[16];
@@ -359,7 +360,7 @@ static int reposet_write_chunk(const struct reposet *rs, const uint8_t *hash,
 				continue;
 			}
 
-			if (fillcb(fd) < 0) {
+			if (fillcb(r, fd) < 0) {
 				close(fd);
 				close(dirfd);
 				continue;
@@ -403,7 +404,7 @@ int reposet_write_chunk_frombuf(const struct reposet *rs, const uint8_t *hash,
 				const uint8_t *data, int datalen,
 				const struct timespec *times)
 {
-	int fillcb(int fd)
+	int fillcb(struct repo *r, int fd)
 	{
 		if (xwrite(fd, data, datalen) != datalen)
 			return -1;
@@ -418,21 +419,26 @@ int reposet_write_chunk_fromfd(const struct reposet *rs, const uint8_t *hash,
 			       int srcfd, uint64_t off, int datalen,
 			       const struct timespec *times)
 {
-	int fillcb(int fd)
+	int fillcb(struct repo *r, int fd)
 	{
 		struct file_clone_range arg;
 		int offset;
 
-		arg.src_fd = srcfd;
-		arg.src_offset = off;
-		arg.src_length = datalen;
-		arg.dest_offset = 0;
-		if (ioctl(fd, FICLONERANGE, &arg) == 0)
-			return 0;
+		if (!r->clone_failed) {
+			arg.src_fd = srcfd;
+			arg.src_offset = off;
+			arg.src_length = datalen;
+			arg.dest_offset = 0;
+			if (ioctl(fd, FICLONERANGE, &arg) == 0)
+				return 0;
 
-		if (errno != EINVAL && errno != EOPNOTSUPP && errno != EXDEV) {
-			perror("ioctl(FICLONERANGE)");
-			return -1;
+			if (errno != EINVAL && errno != EOPNOTSUPP &&
+			    errno != EXDEV) {
+				perror("ioctl(FICLONERANGE)");
+				return -1;
+			}
+
+			r->clone_failed = 1;
 		}
 
 		offset = 0;
