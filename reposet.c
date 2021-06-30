@@ -371,48 +371,13 @@ static int reposet_write_chunk(const struct reposet *rs, const uint8_t *hash,
 				close(dirfd);
 				continue;
 			}
-		} else {
-			int fd;
-			int ret;
-			char path[128];
 
-			fd = openat(dirfd, ".", O_RDWR | O_TMPFILE, 0666);
-			if (fd < 0) {
-				perror("openat");
-				close(dirfd);
-				continue;
-			}
-
-			if (fillcb(r, fd) < 0) {
-				close(fd);
-				close(dirfd);
-				continue;
-			}
-
-			if (futimens(fd, times) < 0) {
-				perror("futimens");
-				close(fd);
-				close(dirfd);
-				continue;
-			}
-
-			snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
-
-			ret = linkat(AT_FDCWD, path, dirfd, name,
-				     AT_SYMLINK_FOLLOW);
-			if (ret < 0) {
-				perror("linkat");
-				close(fd);
-				close(dirfd);
-				continue;
-			}
-
-			close(fd);
+			copies++;
+		} else if (repo_write_file(r, dirfd, name, fillcb, times)) {
+			copies++;
 		}
 
 		close(dirfd);
-
-		copies++;
 	}
 
 	if (copies == 0) {
