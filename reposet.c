@@ -244,6 +244,60 @@ int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash)
 	return -1;
 }
 
+static int repo_write_file(struct repo *r, int dirfd, const char *name,
+			   int (*fillcb)(struct repo *r, int fd),
+			   const struct timespec *times)
+{
+	int fd;
+	int ret;
+	char path[128];
+
+	fd = openat(dirfd, ".", O_RDWR | O_TMPFILE, 0666);
+	if (fd < 0) {
+		perror("openat");
+		return 0;
+	}
+
+	if (fillcb(r, fd) < 0) {
+		close(fd);
+		return 0;
+	}
+
+	if (futimens(fd, times) < 0) {
+		perror("futimens");
+		close(fd);
+		return 0;
+	}
+
+	snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+
+	ret = linkat(AT_FDCWD, path, dirfd, name, AT_SYMLINK_FOLLOW);
+	if (ret < 0) {
+		perror("linkat");
+		close(fd);
+		return 0;
+	}
+
+	close(fd);
+
+	return 1;
+}
+
+static int repo_write_image(struct repo *r, const char *image,
+			    const uint8_t *hashes, uint64_t bytes,
+			    const struct timespec *times)
+{
+	int fillcb(struct repo *r, int fd)
+	{
+		if (xwrite(fd, hashes, bytes) != bytes)
+			return -1;
+
+		return 0;
+	}
+
+	return repo_write_file(r, r->imagedir, image, fillcb, times);
+}
+
 int reposet_write_image(const struct reposet *rs, const char *image,
 			const uint8_t *hashes, uint64_t num_chunks,
 			const struct timespec *times)
@@ -257,9 +311,6 @@ int reposet_write_image(const struct reposet *rs, const char *image,
 	copies = 0;
 	iv_list_for_each (lh, &rs->repos) {
 		struct repo *r;
-		int fd;
-		int ret;
-		char path[128];
 
 		r = iv_container_of(lh, struct repo, list);
 
@@ -268,36 +319,8 @@ int reposet_write_image(const struct reposet *rs, const char *image,
 		if (errno != ENOENT)
 			continue;
 
-		fd = openat(r->imagedir, ".", O_RDWR | O_TMPFILE, 0666);
-		if (fd < 0) {
-			perror("openat");
-			continue;
-		}
-
-		if (xwrite(fd, hashes, bytes) != bytes) {
-			close(fd);
-			continue;
-		}
-
-		if (futimens(fd, times) < 0) {
-			perror("futimens");
-			close(fd);
-			continue;
-		}
-
-		snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
-
-		ret = linkat(AT_FDCWD, path, r->imagedir, image,
-			     AT_SYMLINK_FOLLOW);
-		if (ret < 0) {
-			perror("linkat");
-			close(fd);
-			continue;
-		}
-
-		close(fd);
-
-		copies++;
+		if (repo_write_image(r, image, hashes, bytes, times))
+			copies++;
 	}
 
 	return copies;
