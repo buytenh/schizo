@@ -1,9 +1,13 @@
-all:		repoinit repomount splitimage
+all:		fsck repoinit repomount splitimage
 
 clean:
+		rm -f fsck
 		rm -f repoinit
 		rm -f repomount
 		rm -f splitimage
+
+fsck:		fsck.c base64enc.c base64enc.h reposet.c reposet.h rw.h
+		gcc -O6 -Wall -g -o fsck fsck.c base64enc.c reposet.c `pkg-config ivykis --cflags --libs` `libgcrypt-config --cflags --libs`
 
 repoinit:	repoinit.c
 		gcc -O6 -Wall -g -o repoinit repoinit.c
