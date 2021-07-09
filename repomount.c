@@ -247,6 +247,8 @@ static int repomount_read(const char *path, char *buf, size_t size,
 			uint8_t hash[hash_size];
 			int fd;
 
+			pthread_mutex_unlock(&fh->lock);
+
 			if (xpread(fh->fd, hash, hash_size,
 				   chunk_index * hash_size) != hash_size)
 				goto eio;
@@ -262,6 +264,8 @@ static int repomount_read(const char *path, char *buf, size_t size,
 			}
 
 			close(fd);
+
+			pthread_mutex_lock(&fh->lock);
 		} else {
 			memcpy(buf, c->buf + chunk_offset, chunk_toread);
 			ret = chunk_toread;
@@ -279,8 +283,6 @@ static int repomount_read(const char *path, char *buf, size_t size,
 	return processed;
 
 eio:
-	pthread_mutex_unlock(&fh->lock);
-
 	return processed ? processed : -EIO;
 }
 
