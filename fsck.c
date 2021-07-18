@@ -29,11 +29,13 @@
 #include <iv_avl.h>
 #include <iv_list.h>
 #include <limits.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include "base64enc.h"
 #include "reposet.h"
+#include "threads.h"
 
 struct image {
 	struct iv_avl_node	an;
@@ -345,58 +347,87 @@ static struct image *find_image(int index)
 	return NULL;
 }
 
-static void scan_chunks(void)
+struct chunk_scan_state {
+	pthread_mutex_t		lock;
+	struct iv_avl_node	*an;
+	int			last;
+	uint64_t		num;
+	uint64_t		missing;
+};
+
+static void *chunk_scan_thread(void *_css)
 {
-	struct iv_avl_node *an;
-	int last;
-	uint64_t num;
-	uint64_t missing;
+	struct chunk_scan_state *css = _css;
 
-	last = -1;
-	num = 0;
-	missing = 0;
+	pthread_mutex_lock(&css->lock);
 
-	iv_avl_tree_for_each (an, &chunks) {
+	while (css->an != NULL) {
 		struct chunk *c;
 		int section;
 		int fd;
-		char name[B64SIZE(hash_size) + 1];
-		uint8_t *bm;
-		int i;
 
-		c = iv_container_of(an, struct chunk, an);
+		c = iv_container_of(css->an, struct chunk, an);
+		css->an = iv_avl_tree_next(css->an);
 
 		section = (c->hash_bitmap[0] << 8) | c->hash_bitmap[1];
-		if (last != section) {
-			last = section;
-			printf("scanning %.4x\b\b\b\b\b\b\b\b\b\b\b\b\b",
-			       section);
+		if (css->last != section) {
+			css->last = section;
+			printf("scanning %.4x\b\b\b\b\b\b\b"
+			       "\b\b\b\b\b\b", section);
 			fflush(stdout);
 		}
 
+		pthread_mutex_unlock(&css->lock);
+
 		fd = reposet_open_chunk(&rs, c->hash_bitmap);
-		if (fd >= 0) {
-			num++;
+		if (fd >= 0)
 			close(fd);
-			continue;
-		}
 
-		missing++;
+		pthread_mutex_lock(&css->lock);
 
-		base64enc(name, c->hash_bitmap, hash_size);
-		fprintf(stderr, "can't find chunk %s\n", name);
+		if (fd < 0) {
+			char name[B64SIZE(hash_size) + 1];
+			uint8_t *bm;
+			int i;
 
-		bm = c->hash_bitmap + hash_size;
+			css->missing++;
 
-		for (i = 0; i < num_images; i++) {
-			if (bm[i / CHAR_BIT] & 1 << (i % CHAR_BIT))
-				find_image(i)->missing_chunks++;
+			base64enc(name, c->hash_bitmap, hash_size);
+			fprintf(stderr, "can't find chunk %s\n", name);
+
+			bm = c->hash_bitmap + hash_size;
+
+			for (i = 0; i < num_images; i++) {
+				if (bm[i / CHAR_BIT] & 1 << (i % CHAR_BIT))
+					find_image(i)->missing_chunks++;
+			}
+		} else {
+			css->num++;
 		}
 	}
 
-	printf("scanned %" PRId64 " chunks", num);
-	if (missing)
-		printf(", %" PRId64 " missing", missing);
+	pthread_mutex_unlock(&css->lock);
+
+	return NULL;
+}
+
+static void scan_chunks(void)
+{
+	struct chunk_scan_state css;
+
+	pthread_mutex_init(&css.lock, NULL);
+	css.an = iv_avl_tree_min(&chunks);
+	css.last = -1;
+	css.num = 0;
+	css.missing = 0;
+
+	run_threads(chunk_scan_thread, &css, 128);
+
+	pthread_mutex_destroy(&css.lock);
+
+	printf("scanned %" PRId64 " chunks", css.num);
+	if (css.missing)
+		printf(", %" PRId64 " missing", css.missing);
 	printf("\n");
 }
 
