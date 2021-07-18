@@ -262,29 +262,36 @@ static struct chunk *get_chunk(struct iv_avl_tree *tree, const uint8_t *hash)
 	return c;
 }
 
-static void scan_images(void)
+struct image_scan_state {
+	pthread_mutex_t		lock_images;
+	pthread_mutex_t		lock_chunks[65536];
+	struct iv_avl_node	*an;
+};
+
+static void *image_scan_thread(void *_iss)
 {
-	struct iv_avl_node *an;
-	int i;
+	struct image_scan_state *iss = _iss;
 
-	bitmap_bytes = (num_images + CHAR_BIT - 1) / CHAR_BIT;
-	for (i = 0; i < 65536; i++)
-		INIT_IV_AVL_TREE(&chunks[i], compare_chunks);
+	pthread_mutex_lock(&iss->lock_images);
 
-	iv_avl_tree_for_each (an, &images) {
+	while (iss->an != NULL) {
 		struct image *im;
 		int fd;
 		FILE *fp;
 
-		im = iv_container_of(an, struct image, an);
+		im = iv_container_of(iss->an, struct image, an);
+		iss->an = iv_avl_tree_next(iss->an);
 
 		printf("scanning %d/%d %s\r", im->index + 1, num_images,
 		       im->path + 1);
 		fflush(stdout);
 
+		pthread_mutex_unlock(&iss->lock_images);
+
 		fd = openat(im->r->imagedir, im->path + 1, O_RDONLY);
 		if (fd < 0) {
 			perror("openat");
+			pthread_mutex_lock(&iss->lock_images);
 			continue;
 		}
 
@@ -292,6 +299,7 @@ static void scan_images(void)
 		if (fp == NULL) {
 			perror("fdopen");
 			close(fd);
+			pthread_mutex_lock(&iss->lock_images);
 			continue;
 		}
 
@@ -315,6 +323,8 @@ static void scan_images(void)
 
 			section = (hash[0] << 8) | hash[1];
 
+			pthread_mutex_lock(&iss->lock_chunks[section]);
+
 			c = get_chunk(&chunks[section], hash);
 			if (c == NULL) {
 				fprintf(stderr, "out of memory\n");
@@ -323,12 +333,40 @@ static void scan_images(void)
 
 			c->hash_bitmap[hash_size + (im->index / CHAR_BIT)] |=
 				1 << (im->index % CHAR_BIT);
+
+			pthread_mutex_unlock(&iss->lock_chunks[section]);
 		}
 
 		fclose(fp);
+
+		pthread_mutex_lock(&iss->lock_images);
 	}
 
+	pthread_mutex_unlock(&iss->lock_images);
+
+	return NULL;
+}
+
+static void scan_images(void)
+{
+	int i;
+	struct image_scan_state iss;
+
+	bitmap_bytes = (num_images + CHAR_BIT - 1) / CHAR_BIT;
+	for (i = 0; i < 65536; i++)
+		INIT_IV_AVL_TREE(&chunks[i], compare_chunks);
+
+	pthread_mutex_init(&iss.lock_images, NULL);
+	for (i = 0; i < 65536; i++)
+		pthread_mutex_init(&iss.lock_chunks[i], NULL);
+	iss.an = iv_avl_tree_min(&images);
+
+	run_threads(image_scan_thread, &iss, 2 * sysconf(_SC_NPROCESSORS_ONLN));
 	printf("\n");
+
+	pthread_mutex_destroy(&iss.lock_images);
+	for (i = 0; i < 65536; i++)
+		pthread_mutex_destroy(&iss.lock_chunks[i]);
 }
 
 static struct iv_avl_node *__first_chunk(int start_section)
