@@ -59,7 +59,7 @@ static struct reposet rs;
 static int num_images;
 static struct iv_avl_tree images;
 static int bitmap_bytes;
-static struct iv_avl_tree chunks;
+static struct iv_avl_tree chunks[65536];
 
 static int
 compare_images(const struct iv_avl_node *_a, const struct iv_avl_node *_b)
@@ -219,11 +219,11 @@ compare_chunks(const struct iv_avl_node *_a, const struct iv_avl_node *_b)
 	return memcmp(a->hash_bitmap, b->hash_bitmap, hash_size);
 }
 
-static struct chunk *find_chunk(const uint8_t *hash)
+static struct chunk *find_chunk(struct iv_avl_tree *tree, const uint8_t *hash)
 {
 	struct iv_avl_node *an;
 
-	an = chunks.root;
+	an = tree->root;
 	while (an != NULL) {
 		struct chunk *c;
 		int ret;
@@ -243,11 +243,11 @@ static struct chunk *find_chunk(const uint8_t *hash)
 	return NULL;
 }
 
-static struct chunk *get_chunk(const uint8_t *hash)
+static struct chunk *get_chunk(struct iv_avl_tree *tree, const uint8_t *hash)
 {
 	struct chunk *c;
 
-	c = find_chunk(hash);
+	c = find_chunk(tree, hash);
 	if (c != NULL)
 		return c;
 
@@ -257,7 +257,7 @@ static struct chunk *get_chunk(const uint8_t *hash)
 
 	memcpy(c->hash_bitmap, hash, hash_size);
 	memset(c->hash_bitmap + hash_size, 0, bitmap_bytes);
-	iv_avl_tree_insert(&chunks, &c->an);
+	iv_avl_tree_insert(tree, &c->an);
 
 	return c;
 }
@@ -265,9 +265,11 @@ static struct chunk *get_chunk(const uint8_t *hash)
 static void scan_images(void)
 {
 	struct iv_avl_node *an;
+	int i;
 
 	bitmap_bytes = (num_images + CHAR_BIT - 1) / CHAR_BIT;
-	INIT_IV_AVL_TREE(&chunks, compare_chunks);
+	for (i = 0; i < 65536; i++)
+		INIT_IV_AVL_TREE(&chunks[i], compare_chunks);
 
 	iv_avl_tree_for_each (an, &images) {
 		struct image *im;
@@ -296,6 +298,7 @@ static void scan_images(void)
 		while (1) {
 			uint8_t hash[hash_size];
 			size_t ret;
+			int section;
 			struct chunk *c;
 
 			ret = fread(hash, 1, hash_size, fp);
@@ -310,7 +313,9 @@ static void scan_images(void)
 				break;
 			}
 
-			c = get_chunk(hash);
+			section = (hash[0] << 8) | hash[1];
+
+			c = get_chunk(&chunks[section], hash);
 			if (c == NULL) {
 				fprintf(stderr, "out of memory\n");
 				break;
@@ -324,6 +329,42 @@ static void scan_images(void)
 	}
 
 	printf("\n");
+}
+
+static struct iv_avl_node *__first_chunk(int start_section)
+{
+	int i;
+
+	for (i = start_section; i < 65536; i++) {
+		struct iv_avl_node *an;
+
+		an = iv_avl_tree_min(&chunks[i]);
+		if (an != NULL)
+			return an;
+	}
+
+	return NULL;
+}
+
+static struct iv_avl_node *first_chunk(void)
+{
+	return __first_chunk(0);
+}
+
+static struct iv_avl_node *next_chunk(struct iv_avl_node *an)
+{
+	struct iv_avl_node *next;
+	struct chunk *c;
+	int section;
+
+	next = iv_avl_tree_next(an);
+	if (next != NULL)
+		return next;
+
+	c = iv_container_of(an, struct chunk, an);
+	section = (c->hash_bitmap[0] << 8) | c->hash_bitmap[1];
+
+	return __first_chunk(section + 1);
 }
 
 static struct image *find_image(int index)
@@ -367,7 +408,7 @@ static void *chunk_scan_thread(void *_css)
 		int fd;
 
 		c = iv_container_of(css->an, struct chunk, an);
-		css->an = iv_avl_tree_next(css->an);
+		css->an = next_chunk(css->an);
 
 		section = (c->hash_bitmap[0] << 8) | c->hash_bitmap[1];
 		if (css->last != section) {
@@ -416,7 +457,7 @@ static void scan_chunks(void)
 	struct chunk_scan_state css;
 
 	pthread_mutex_init(&css.lock, NULL);
-	css.an = iv_avl_tree_min(&chunks);
+	css.an = first_chunk();
 	css.last = -1;
 	css.num = 0;
 	css.missing = 0;
