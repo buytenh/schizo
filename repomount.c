@@ -34,6 +34,7 @@
 #include <iv_list.h>
 #include <limits.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include "reposet.h"
 #include "rw.h"
@@ -53,6 +54,9 @@ struct repomount_file_info {
 	uint64_t		num_dirty_chunks;
 	struct iv_list_head	lru;
 	struct timespec		last_write;
+
+	bool		wrote_empty_chunk;
+	uint8_t		empty_chunk_hash[];
 };
 
 struct dirty_chunk {
@@ -193,7 +197,7 @@ static int repomount_open(const char *path, struct fuse_file_info *fi)
 	if (ret < 0)
 		return ret;
 
-	fh = malloc(sizeof(*fh));
+	fh = malloc(sizeof(*fh) + hash_size);
 	if (fh == NULL) {
 		close(fd);
 		return -ENOMEM;
@@ -211,6 +215,8 @@ static int repomount_open(const char *path, struct fuse_file_info *fi)
 	fh->num_dirty_chunks = 0;
 	INIT_IV_LIST_HEAD(&fh->lru);
 	fh->last_write = buf.st_mtim;
+
+	fh->wrote_empty_chunk = false;
 
 	fi->fh = (int64_t)fh;
 
@@ -335,13 +341,11 @@ static void timespec_copy(struct timespec *to, const struct timespec *from)
 	to->tv_nsec = from->tv_nsec;
 }
 
-static void __flush_dirty_chunk(struct repomount_file_info *fh,
-				struct dirty_chunk *c)
+static void write_dirty_chunk(struct repomount_file_info *fh,
+			      struct dirty_chunk *c, uint8_t *hash)
 {
-	uint8_t hash[hash_size];
 	struct timespec times[2];
 	int copies;
-	int ret;
 
 	gcry_md_hash_buffer(hash_algo, hash, c->buf, c->length);
 
@@ -353,14 +357,23 @@ static void __flush_dirty_chunk(struct repomount_file_info *fh,
 	copies = reposet_write_chunk_frombuf(&rs, hash, c->buf, c->length,
 					     times);
 	if (copies == 0) {
-		fprintf(stderr, "flush_dirty_chunk: no copies written\n");
+		fprintf(stderr, "write_dirty_chunk: no copies written\n");
 		abort();
 	}
+}
+
+static void __flush_dirty_chunk(struct repomount_file_info *fh,
+				struct dirty_chunk *c)
+{
+	uint8_t hash[hash_size];
+	int ret;
+
+	write_dirty_chunk(fh, c, hash);
 
 	ret = xpwrite(fh->fd, hash, hash_size, c->chunk_index * hash_size);
 	if (ret != hash_size) {
 		if (ret >= 0)
-			fprintf(stderr, "flush_dirty_chunk: short write\n");
+			fprintf(stderr, "__flush_dirty_chunk: short write\n");
 		abort();
 	}
 
@@ -752,29 +765,57 @@ static int repomount_fallocate(const char *path, int mode, off_t offset,
 		uint64_t chunk_index;
 		uint32_t chunk_offset;
 		uint32_t chunk_size;
-		struct dirty_chunk *c;
 		size_t chunk_tozero;
+		struct dirty_chunk *c;
 
 		chunk_index = offset / fh->size_firstchunk;
 		chunk_offset = offset % fh->size_firstchunk;
 
 		chunk_size = compute_chunk_size(fh, chunk_index);
 
-		if (chunk_offset != 0 || length < chunk_size)
-			c = __get_dirty_chunk(fh, chunk_index, 1);
-		else
-			c = __get_dirty_chunk(fh, chunk_index, 0);
-
-		if (c == NULL) {
-			ret = -EIO;
-			goto out;
-		}
-
 		chunk_tozero = chunk_size - chunk_offset;
 		if (chunk_tozero > length)
 			chunk_tozero = length;
 
-		memset(c->buf + chunk_offset, 0, chunk_tozero);
+		c = __find_dirty_chunk(fh, chunk_index);
+		if (c == NULL && chunk_tozero < fh->size_firstchunk) {
+			if (chunk_tozero < chunk_size)
+				c = __get_dirty_chunk(fh, chunk_index, 1);
+			else
+				c = __get_dirty_chunk(fh, chunk_index, 0);
+
+			if (c == NULL) {
+				ret = -EIO;
+				goto out;
+			}
+		}
+
+		if (c != NULL) {
+			memset(c->buf + chunk_offset, 0, chunk_tozero);
+		} else {
+			int ret;
+
+			if (!fh->wrote_empty_chunk) {
+				c = alloca(sizeof(*c) + fh->size_firstchunk);
+				c->chunk_index = chunk_index;
+				c->length = fh->size_firstchunk;
+				clock_gettime(CLOCK_REALTIME, &c->last_write);
+				memset(c->buf, 0, fh->size_firstchunk);
+
+				write_dirty_chunk(fh, c, fh->empty_chunk_hash);
+				fh->wrote_empty_chunk = 1;
+			}
+
+			ret = xpwrite(fh->fd, fh->empty_chunk_hash, hash_size,
+				      chunk_index * hash_size);
+			if (ret != hash_size) {
+				if (ret >= 0) {
+					fprintf(stderr, "repomount_fallocate: "
+							"short write\n");
+				}
+				abort();
+			}
+		}
 
 		offset += chunk_tozero;
 		length -= chunk_tozero;
