@@ -277,7 +277,7 @@ static int repo_write_file_tmpfile(struct repo *r, int dirfd,
 	snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
 
 	ret = linkat(AT_FDCWD, path, dirfd, name, AT_SYMLINK_FOLLOW);
-	if (ret < 0) {
+	if (ret < 0 && errno != EEXIST) {
 		perror("linkat");
 		close(fd);
 		return 0;
