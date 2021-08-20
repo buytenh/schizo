@@ -17,8 +17,8 @@
  * Boston, MA 02110-1301, USA.
  */
 
-#ifndef __BASE64_H
-#define __BASE64_H
+#ifndef __BASE64ENC_H
+#define __BASE64ENC_H
 
 #include <inttypes.h>
 
