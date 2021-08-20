@@ -100,6 +100,10 @@ int reposet_open_image(const struct reposet *rs, const char *image, mode_t mode)
 		r = iv_container_of(lh, struct repo, list);
 
 		fd = openat(r->imagedir, image, mode);
+
+		if (fd < 0 && errno == ELOOP)
+			fd = openat(r->imagedir, image, mode | O_PATH);
+
 		if (fd < 0) {
 			if (errno != ENOENT)
 				perror("openat");
@@ -190,31 +194,36 @@ int reposet_stat_image(const struct reposet *rs, int fd,
 		       struct image_info *info, struct stat *buf)
 {
 	struct stat statbuf;
-	uint64_t numchunks;
-	uint64_t size;
-	uint32_t size_firstchunk;
-	int ret;
 
 	if (fstat(fd, &statbuf) < 0) {
 		perror("fstat");
 		return -1;
 	}
 
-	ret = stat_chunks(rs, fd, statbuf.st_size, &numchunks,
-			  &size, &size_firstchunk);
-	if (ret < 0)
-		return -ENOENT;
-
-	if (info != NULL) {
-		info->numchunks = numchunks;
-		info->size = size;
-		info->size_firstchunk = size_firstchunk;
-	}
-
-	if (buf != NULL) {
+	if (buf != NULL)
 		memcpy(buf, &statbuf, sizeof(*buf));
-		buf->st_size = size;
-		buf->st_blocks = size >> 9;
+
+	if ((statbuf.st_mode & S_IFMT) == S_IFREG) {
+		uint64_t numchunks;
+		uint64_t size;
+		uint32_t size_firstchunk;
+		int ret;
+
+		ret = stat_chunks(rs, fd, statbuf.st_size, &numchunks,
+				  &size, &size_firstchunk);
+		if (ret < 0)
+			return -ENOENT;
+
+		if (info != NULL) {
+			info->numchunks = numchunks;
+			info->size = size;
+			info->size_firstchunk = size_firstchunk;
+		}
+
+		if (buf != NULL) {
+			buf->st_size = size;
+			buf->st_blocks = size >> 9;
+		}
 	}
 
 	return 0;

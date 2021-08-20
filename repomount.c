@@ -101,7 +101,7 @@ static int repomount_getattr(const char *path, struct stat *buf,
 		return -ENOENT;
 	}
 
-	fd = reposet_open_image(&rs, path + 1, O_RDONLY);
+	fd = reposet_open_image(&rs, path + 1, O_RDONLY | O_NOFOLLOW);
 	if (fd < 0)
 		return fd;
 
@@ -114,6 +114,36 @@ static int repomount_getattr(const char *path, struct stat *buf,
 	close(fd);
 
 	return 0;
+}
+
+static int repomount_readlink(const char *path, char *buf, size_t bufsiz)
+{
+	struct iv_list_head *lh;
+
+	if (path[0] != '/') {
+		fprintf(stderr, "readlink called with [%s]\n", path);
+		return -ENOENT;
+	}
+
+	iv_list_for_each (lh, &rs.repos) {
+		struct repo *r;
+		int ret;
+
+		r = iv_container_of(lh, struct repo, list);
+
+		ret = readlinkat(r->imagedir, path + 1, buf, bufsiz);
+		if (ret >= 0) {
+			if (bufsiz && ret == bufsiz)
+				ret--;
+			buf[ret] = 0;
+			return 0;
+		}
+
+		if (ret < 0 && errno != ENOENT)
+			return -errno;
+	}
+
+	return -ENOENT;
 }
 
 static int repomount_truncate(const char *path, off_t length,
@@ -601,17 +631,20 @@ static int repomount_readdir(const char *path, void *buf,
 			     struct fuse_file_info *fi,
 			     enum fuse_readdir_flags flags)
 {
+	const char *pp;
 	struct iv_avl_tree dentries;
 	struct iv_list_head *lh;
 	int ret;
 
-	if (strcmp(path, "/") != 0) {
+	if (path[0] != '/') {
 		fprintf(stderr, "readdir called with [%s]\n", path);
-		return 0;
+		return -ENOENT;
 	}
 
-	filler(buf, ".", NULL, 0, 0);
-	filler(buf, "..", NULL, 0, 0);
+	if (path[1])
+		pp = path + 1;
+	else
+		pp = ".";
 
 	INIT_IV_AVL_TREE(&dentries, compare_dentries);
 
@@ -623,7 +656,7 @@ static int repomount_readdir(const char *path, void *buf,
 
 		r = iv_container_of(lh, struct repo, list);
 
-		fd = openat(r->imagedir, ".", O_DIRECTORY | O_RDONLY);
+		fd = openat(r->imagedir, pp, O_DIRECTORY | O_RDONLY);
 		if (fd < 0) {
 			ret = -errno;
 			break;
@@ -666,7 +699,8 @@ static int repomount_readdir(const char *path, void *buf,
 				}
 			}
 
-			if (d_type != DT_REG)
+			if (d_type != DT_DIR && d_type != DT_REG &&
+			    d_type != DT_LNK)
 				continue;
 
 			filler(buf, dent->d_name, NULL, 0, 0);
@@ -754,6 +788,7 @@ out:
 
 static struct fuse_operations repomount_oper = {
 	.getattr	= repomount_getattr,
+	.readlink	= repomount_readlink,
 	.truncate	= repomount_truncate,
 	.open		= repomount_open,
 	.read		= repomount_read,
