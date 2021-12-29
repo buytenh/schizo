@@ -459,6 +459,16 @@ static void *chunk_scan_thread(void *_css)
 		pthread_mutex_unlock(&css->lock);
 
 		fd = reposet_open_chunk(&rs, c->hash_bitmap);
+		if (fd < 0 && reposet_undelete_chunk(&rs, c->hash_bitmap)) {
+			fd = reposet_open_chunk(&rs, c->hash_bitmap);
+			if (fd >= 0) {
+				char name[B64SIZE(hash_size) + 1];
+
+				base64enc(name, c->hash_bitmap, hash_size);
+				fprintf(stderr, "undeleted chunk %s\n", name);
+			}
+		}
+
 		if (fd >= 0)
 			close(fd);
 

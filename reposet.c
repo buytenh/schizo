@@ -261,6 +261,39 @@ int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash)
 	return -1;
 }
 
+int reposet_undelete_chunk(const struct reposet *rs, const uint8_t *hash)
+{
+	char name[B64SIZE(rs->hash_size) + 1];
+	char dirname[6 + B64SIZE(rs->hash_size) + 1];
+	int undeleted;
+	struct iv_list_head *lh;
+
+	base64enc(name, hash, rs->hash_size);
+
+	snprintf(dirname, sizeof(dirname), "%.2x/%.2x", hash[0], hash[1]);
+	dirname[5] = '/';
+	memcpy(dirname + 6, name, B64SIZE(rs->hash_size));
+	dirname[6 + B64SIZE(rs->hash_size)] = 0;
+
+	undeleted = 0;
+	iv_list_for_each (lh, &rs->repos) {
+		struct repo *r;
+
+		r = iv_container_of(lh, struct repo, list);
+
+		if (r->deldir != -1) {
+			int ret;
+
+			ret = renameat2(r->deldir, name, r->chunkdir, dirname,
+					RENAME_NOREPLACE);
+			if (ret == 0)
+				undeleted++;
+		}
+	}
+
+	return undeleted;
+}
+
 static int repo_write_file_tmpfile(struct repo *r, int dirfd,
 				   const char *name,
 				   int (*fillcb)(struct repo *r, int fd),

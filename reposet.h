@@ -60,6 +60,8 @@ int reposet_stat_image(const struct reposet *rs, int fd,
 
 int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash);
 
+int reposet_undelete_chunk(const struct reposet *rs, const uint8_t *hash);
+
 int reposet_write_image(const struct reposet *rs, const char *image,
 			const uint8_t *hashes, uint64_t num_chunks,
 			const struct timespec *times);
