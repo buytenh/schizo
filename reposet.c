@@ -50,6 +50,7 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 {
 	int repodir;
 	int chunkdir;
+	int deldir;
 	int imagedir;
 	struct repo *r;
 
@@ -63,8 +64,12 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 		return -1;
 	}
 
+	deldir = openat(repodir, "deleted", O_DIRECTORY);
+
 	imagedir = openat(repodir, "images", O_DIRECTORY);
 	if (imagedir < 0) {
+		if (deldir != -1)
+			close(deldir);
 		close(chunkdir);
 		close(repodir);
 		return -1;
@@ -73,6 +78,8 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 	r = malloc(sizeof(*r));
 	if (r == NULL) {
 		close(imagedir);
+		if (deldir != -1)
+			close(deldir);
 		close(chunkdir);
 		return -1;
 	}
@@ -81,6 +88,7 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 	r->path = strdup(path);
 	r->repodir = repodir;
 	r->chunkdir = chunkdir;
+	r->deldir = deldir;
 	r->imagedir = imagedir;
 	r->tmpdir = -1;
 	r->clone_failed = 0;
