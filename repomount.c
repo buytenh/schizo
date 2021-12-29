@@ -577,10 +577,8 @@ static int repomount_statfs(const char *path, struct statvfs *buf)
 	return -EIO;
 }
 
-static int repomount_release(const char *path, struct fuse_file_info *fi)
+static void flush_file(struct repomount_file_info *fh)
 {
-	struct repomount_file_info *fh = (void *)fi->fh;
-
 	pthread_mutex_lock(&fh->lock);
 
 	while (!iv_avl_tree_empty(&fh->dirty_chunks)) {
@@ -594,9 +592,26 @@ static int repomount_release(const char *path, struct fuse_file_info *fi)
 	}
 
 	pthread_mutex_unlock(&fh->lock);
+}
+
+static int repomount_release(const char *path, struct fuse_file_info *fi)
+{
+	struct repomount_file_info *fh = (void *)fi->fh;
+
+	flush_file(fh);
 
 	close(fh->fd);
 	free(fh);
+
+	return 0;
+}
+
+static int repomount_fsync(const char *path, int datasync,
+			   struct fuse_file_info *fi)
+{
+	struct repomount_file_info *fh = (void *)fi->fh;
+
+	flush_file(fh);
 
 	return 0;
 }
@@ -836,6 +851,7 @@ static struct fuse_operations repomount_oper = {
 	.write		= repomount_write,
 	.statfs		= repomount_statfs,
 	.release	= repomount_release,
+	.fsync		= repomount_fsync,
 	.readdir	= repomount_readdir,
 	.fallocate	= repomount_fallocate,
 };
