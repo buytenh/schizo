@@ -1,4 +1,5 @@
 fsck
+gc
 repoinit
 repomount
 scrub

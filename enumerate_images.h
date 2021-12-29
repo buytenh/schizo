@@ -26,8 +26,11 @@
 struct image {
 	struct iv_avl_node	an;
 	int			index;
-	uint64_t		missing_chunks;
 	struct repo		*r;
+
+	/* for fsck  */
+	uint64_t		missing_chunks;
+
 	char			path[];
 };
 
