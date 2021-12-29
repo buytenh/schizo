@@ -32,6 +32,7 @@ struct reposet {
 struct repo {
 	struct iv_list_head	list;
 	const char		*path;
+	int			repodir;
 	int			chunkdir;
 	int			imagedir;
 	int			tmpdir;

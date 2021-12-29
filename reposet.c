@@ -70,8 +70,6 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 		return -1;
 	}
 
-	close(repodir);
-
 	r = malloc(sizeof(*r));
 	if (r == NULL) {
 		close(imagedir);
@@ -81,6 +79,7 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 
 	iv_list_add_tail(&r->list, &rs->repos);
 	r->path = strdup(path);
+	r->repodir = repodir;
 	r->chunkdir = chunkdir;
 	r->imagedir = imagedir;
 	r->tmpdir = -1;
@@ -301,18 +300,18 @@ static int try_open_tmpdir(struct repo *r)
 {
 	int dir;
 
-	dir = openat(r->chunkdir, "../tmp", O_DIRECTORY);
+	dir = openat(r->repodir, "tmp", O_DIRECTORY);
 	if (dir < 0) {
 		if (errno == ENOENT) {
 			int ret;
 
-			ret = mkdirat(r->chunkdir, "../tmp", 0777);
+			ret = mkdirat(r->repodir, "tmp", 0777);
 			if (ret < 0 && errno != EEXIST) {
 				perror("mkdirat");
 				return -1;
 			}
 
-			dir = openat(r->chunkdir, "../tmp", O_DIRECTORY);
+			dir = openat(r->repodir, "tmp", O_DIRECTORY);
 		}
 
 		if (dir < 0) {
