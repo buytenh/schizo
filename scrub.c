@@ -19,46 +19,43 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <dirent.h>
-#include <errno.h>
 #include <fcntl.h>
 #include <gcrypt.h>
 #include <getopt.h>
-#include <iv_list.h>
 #include <limits.h>
-#include <pthread.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 #include "base64dec.h"
+#include "enumerate_chunks.h"
 #include "reposet.h"
 #include "rw.h"
-#include "threads.h"
 
 static int block_size = 1048576;
 static int hash_algo = GCRY_MD_SHA512;
 static int hash_size;
 
-struct repo_scrub_state {
-	struct repo		*r;
-	pthread_mutex_t		lock;
-	int			section;
-	uint64_t		num;
-	uint64_t		num_mismatch;
-};
+static uint64_t num;
+static uint64_t num_mismatch;
 
 struct scrub_thread_state {
-	struct repo_scrub_state	*rss;
-	uint8_t			*buf;
-	size_t			buf_size;
-	uint64_t		num;
-	uint64_t		num_mismatch;
-	int			section;
+	uint8_t		*buf;
+	size_t		buf_size;
+	uint64_t	num;
+	uint64_t	num_mismatch;
 };
 
-static void scrub_chunk(struct scrub_thread_state *sts, const char *dir,
+static void scrub_thread_init(void *_sts)
+{
+	struct scrub_thread_state *sts = _sts;
+
+	sts->buf = NULL;
+	sts->buf_size = 0;
+	sts->num = 0;
+	sts->num_mismatch = 0;
+}
+
+static void scrub_chunk(void *_sts, int section, const char *dir,
 			int dirfd, const char *name, const uint8_t *hash)
 {
+	struct scrub_thread_state *sts = _sts;
 	int fd;
 	struct stat statbuf;
 	uint8_t hash2[hash_size];
@@ -113,142 +110,25 @@ out:
 	close(fd);
 }
 
-static void scrub_section(struct scrub_thread_state *sts)
+static void scrub_thread_deinit(void *_sts)
 {
-	char dir[16];
-	int dirfd;
-	DIR *dirp;
+	struct scrub_thread_state *sts = _sts;
 
-	snprintf(dir, sizeof(dir), "%.2x/%.2x",
-		 (sts->section >> 8) & 0xff, sts->section & 0xff);
-
-	dirfd = openat(sts->rss->r->chunkdir, dir, O_DIRECTORY | O_RDONLY);
-	if (dirfd < 0) {
-		if (errno != ENOENT)
-			perror("openat");
-		return;
-	}
-
-	dirp = fdopendir(dirfd);
-	if (dirp == NULL) {
-		perror("fdopendir");
-		close(dirfd);
-		return;
-	}
-
-	while (1) {
-		struct dirent *dent;
-		unsigned char d_type;
-		uint8_t hash[hash_size];
-
-		errno = 0;
-
-		dent = readdir(dirp);
-		if (dent == NULL) {
-			if (errno)
-				perror("readdir");
-			break;
-		}
-
-		if (strcmp(dent->d_name, ".") == 0)
-			continue;
-		if (strcmp(dent->d_name, "..") == 0)
-			continue;
-
-		d_type = dent->d_type;
-		if (d_type == DT_UNKNOWN) {
-			struct stat sbuf;
-			int ret;
-
-			ret = fstatat(dirfd, dent->d_name, &sbuf, 0);
-			if (ret == 0 && (sbuf.st_mode & S_IFMT) == S_IFREG)
-				d_type = DT_REG;
-		}
-
-		if (d_type != DT_REG) {
-			fprintf(stderr, "found strange entry: %s/%s\n",
-				dir, dent->d_name);
-			continue;
-		}
-
-		if (strlen(dent->d_name) != B64SIZE(hash_size)) {
-			fprintf(stderr, "found odd-length file name: %s/%s\n",
-				dir, dent->d_name);
-			continue;
-		}
-
-		if (base64dec(hash, dent->d_name, B64SIZE(hash_size)) < 0) {
-			fprintf(stderr, "found undecodable file name: %s/%s\n",
-				dir, dent->d_name);
-			continue;
-		}
-
-		if (hash[0] != ((sts->section >> 8) & 0xff) ||
-		    hash[1] != (sts->section & 0xff)) {
-			fprintf(stderr, "found chunk in the wrong dir: %s/%s\n",
-				dir, dent->d_name);
-		}
-
-		scrub_chunk(sts, dir, dirfd, dent->d_name, hash);
-	}
-
-	closedir(dirp);
-}
-
-static void *repo_scrub_thread(void *_rss)
-{
-	struct repo_scrub_state *rss = _rss;
-	struct scrub_thread_state sts;
-
-	sts.rss = rss;
-	sts.buf = NULL;
-	sts.buf_size = 0;
-	sts.num = 0;
-	sts.num_mismatch = 0;
-
-	pthread_mutex_lock(&rss->lock);
-
-	while (rss->section < 0x10000) {
-		sts.section = rss->section;
-		rss->section++;
-
-		printf("scrubbing %.4x\b\b\b\b\b\b\b\b\b\b\b\b\b\b",
-		       sts.section);
-		fflush(stdout);
-
-		pthread_mutex_unlock(&rss->lock);
-		scrub_section(&sts);
-		pthread_mutex_lock(&rss->lock);
-	}
-
-	rss->num += sts.num;
-	rss->num_mismatch += sts.num_mismatch;
-
-	pthread_mutex_unlock(&rss->lock);
-
-	if (sts.buf != NULL)
-		free(sts.buf);
-
-	return NULL;
+	num += sts->num;
+	num_mismatch += sts->num_mismatch;
 }
 
 static void scrub_repo(struct repo *r)
 {
-	struct repo_scrub_state rss;
+	num = 0;
+	num_mismatch = 0;
 
-	rss.r = r;
-	pthread_mutex_init(&rss.lock, NULL);
-	rss.section = 0;
-	rss.num = 0;
-	rss.num_mismatch = 0;
+	enumerate_chunks(r, hash_size, sizeof(struct scrub_thread_state),
+			 scrub_thread_init, scrub_chunk, scrub_thread_deinit);
 
-	run_threads(repo_scrub_thread, &rss, 128);
-
-	pthread_mutex_destroy(&rss.lock);
-
-	printf("scrubbed %" PRId64 " chunks", rss.num);
-	if (rss.num_mismatch)
-		printf(", %" PRId64 " mismatches", rss.num_mismatch);
+	printf("scrubbed %" PRId64 " chunks", num);
+	if (num_mismatch)
+		printf(", %" PRId64 " mismatches", num_mismatch);
 	printf("\n");
 }
 
