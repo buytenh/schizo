@@ -579,16 +579,32 @@ static int repomount_statfs(const char *path, struct statvfs *buf)
 
 static void flush_file(struct repomount_file_info *fh)
 {
+	int dirty_chunks;
+	struct iv_avl_node *an;
+
 	pthread_mutex_lock(&fh->lock);
 
-	while (!iv_avl_tree_empty(&fh->dirty_chunks)) {
-		struct iv_avl_node *an;
-		struct dirty_chunk *c;
+	dirty_chunks = 0;
+	iv_avl_tree_for_each (an, &fh->dirty_chunks)
+		dirty_chunks++;
 
-		an = iv_avl_tree_min(&fh->dirty_chunks);
+	if (dirty_chunks) {
+		int i;
 
-		c = iv_container_of(an, struct dirty_chunk, an);
-		__flush_dirty_chunk(fh, c);
+		i = 0;
+		while (!iv_avl_tree_empty(&fh->dirty_chunks)) {
+			struct dirty_chunk *c;
+
+			fprintf(stderr, "\rfd %d: flushing chunk %d/%d",
+				fh->fd, ++i, dirty_chunks);
+
+			an = iv_avl_tree_min(&fh->dirty_chunks);
+
+			c = iv_container_of(an, struct dirty_chunk, an);
+			__flush_dirty_chunk(fh, c);
+		}
+
+		fprintf(stderr, "\n");
 	}
 
 	pthread_mutex_unlock(&fh->lock);
