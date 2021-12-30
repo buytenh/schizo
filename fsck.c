@@ -30,6 +30,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include "base64enc.h"
+#include "enumerate_chunks.h"
 #include "enumerate_images.h"
 #include "enumerate_image_chunks.h"
 #include "reposet.h"
@@ -45,40 +46,55 @@ static int num_images;
 static struct iv_avl_tree images;
 static struct iv_avl_tree chunks[65536];
 
-static struct iv_avl_node *__first_chunk(int start_section)
+static uint64_t num;
+
+struct fsck_thread_state {
+	uint64_t	num;
+};
+
+static void fsck_thread_init(void *_fts)
 {
-	int i;
+	struct fsck_thread_state *fts = _fts;
 
-	for (i = start_section; i < 65536; i++) {
-		struct iv_avl_node *an;
-
-		an = iv_avl_tree_min(&chunks[i]);
-		if (an != NULL)
-			return an;
-	}
-
-	return NULL;
+	fts->num = 0;
 }
 
-static struct iv_avl_node *first_chunk(void)
+static void got_chunk(void *_fts, int section, const char *dir, int dirfd,
+		      const char *name, const uint8_t *hash)
 {
-	return __first_chunk(0);
-}
-
-static struct iv_avl_node *next_chunk(struct iv_avl_node *an)
-{
-	struct iv_avl_node *next;
+	struct fsck_thread_state *fts = _fts;
 	struct chunk *c;
-	int section;
 
-	next = iv_avl_tree_next(an);
-	if (next != NULL)
-		return next;
+	c = find_chunk(&chunks[section], hash, hash_size);
+	if (c != NULL) {
+		iv_avl_tree_delete(&chunks[section], &c->an);
+		free(c);
 
-	c = iv_container_of(an, struct chunk, an);
-	section = (c->data[0] << 8) | c->data[1];
+		fts->num++;
+	}
+}
 
-	return __first_chunk(section + 1);
+static void fsck_thread_deinit(void *_fts)
+{
+	struct fsck_thread_state *fts = _fts;
+
+	num += fts->num;
+}
+
+static void scan_chunks(void)
+{
+	struct iv_list_head *lh;
+
+	num = 0;
+	iv_list_for_each (lh, &rs.repos) {
+		struct repo *r;
+
+		r = iv_container_of(lh, struct repo, list);
+		enumerate_chunks(r, hash_size,
+				 sizeof(struct fsck_thread_state),
+				 fsck_thread_init, got_chunk,
+				 fsck_thread_deinit);
+	}
 }
 
 static struct image *find_image(int index)
@@ -102,103 +118,50 @@ static struct image *find_image(int index)
 	return NULL;
 }
 
-struct chunk_scan_state {
-	pthread_mutex_t		lock;
-	struct iv_avl_node	*an;
-	int			last;
-	uint64_t		num;
-	uint64_t		missing;
-};
-
-static void *chunk_scan_thread(void *_css)
+static int missing_chunk(struct chunk *c)
 {
-	struct chunk_scan_state *css = _css;
+	char name[B64SIZE(hash_size) + 1];
+	uint8_t *bm;
+	int i;
 
-	pthread_mutex_lock(&css->lock);
+	base64enc(name, c->data, hash_size);
 
-	while (css->an != NULL) {
-		struct chunk *c;
-		int section;
-		int fd;
-
-		c = iv_container_of(css->an, struct chunk, an);
-		css->an = next_chunk(css->an);
-
-		section = (c->data[0] << 8) | c->data[1];
-		if (css->last != section) {
-			css->last = section;
-			printf("scanning %.4x\b\b\b\b\b\b\b"
-			       "\b\b\b\b\b\b", section);
-			fflush(stdout);
-		}
-
-		pthread_mutex_unlock(&css->lock);
-
-		fd = reposet_open_chunk(&rs, c->data);
-		if (fd < 0 && reposet_undelete_chunk(&rs, c->data)) {
-			fd = reposet_open_chunk(&rs, c->data);
-			if (fd >= 0) {
-				char name[B64SIZE(hash_size) + 1];
-
-				base64enc(name, c->data, hash_size);
-				fprintf(stderr, "undeleted chunk %s\n", name);
-			}
-		}
-
-		if (fd >= 0)
-			close(fd);
-
-		pthread_mutex_lock(&css->lock);
-
-		if (fd < 0) {
-			char name[B64SIZE(hash_size) + 1];
-			uint8_t *bm;
-			int i;
-
-			css->missing++;
-
-			base64enc(name, c->data, hash_size);
-			fprintf(stderr, "can't find chunk %s\n", name);
-
-			bm = c->data + hash_size;
-
-			for (i = 0; i < num_images; i++) {
-				if (bm[i / CHAR_BIT] & 1 << (i % CHAR_BIT))
-					find_image(i)->missing_chunks++;
-			}
-		} else {
-			css->num++;
-		}
+	if (reposet_undelete_chunk(&rs, c->data)) {
+		fprintf(stderr, "undeleted chunk %s\n", name);
+		return 0;
 	}
 
-	pthread_mutex_unlock(&css->lock);
+	fprintf(stderr, "can't find chunk %s\n", name);
 
-	return NULL;
-}
+	bm = c->data + hash_size;
+	for (i = 0; i < num_images; i++) {
+		if (bm[i / CHAR_BIT] & 1 << (i % CHAR_BIT))
+			find_image(i)->missing_chunks++;
+	}
 
-static void scan_chunks(void)
-{
-	struct chunk_scan_state css;
-
-	pthread_mutex_init(&css.lock, NULL);
-	css.an = first_chunk();
-	css.last = -1;
-	css.num = 0;
-	css.missing = 0;
-
-	run_threads(chunk_scan_thread, &css, 128);
-
-	pthread_mutex_destroy(&css.lock);
-
-	printf("scanned %" PRId64 " chunks", css.num);
-	if (css.missing)
-		printf(", %" PRId64 " missing", css.missing);
-	printf("\n");
+	return 1;
 }
 
 static void report_missing_chunks(void)
 {
+	uint64_t missing;
+	int i;
 	struct iv_avl_node *an;
+
+	missing = 0;
+	for (i = 0; i < 65536; i++) {
+		iv_avl_tree_for_each (an, &chunks[i]) {
+			struct chunk *c;
+
+			c = iv_container_of(an, struct chunk, an);
+			missing += missing_chunk(c);
+		}
+	}
+
+	printf("scanned %" PRId64 " chunks", num);
+	if (missing)
+		printf(", %" PRId64 " missing", missing);
+	printf("\n");
 
 	iv_avl_tree_for_each (an, &images) {
 		struct image *im;
