@@ -168,8 +168,8 @@ static void report_missing_chunks(void)
 
 		im = iv_container_of(an, struct image, an);
 		if (im->missing_chunks) {
-			printf("%s %s: %" PRId64 " missing chunk(s)\n",
-			       im->r->path, im->path, im->missing_chunks);
+			fprintf(stderr, "%s %s: %" PRId64 " missing chunk(s)\n",
+				im->r->path, im->path, im->missing_chunks);
 		}
 	}
 }
