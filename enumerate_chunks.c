@@ -159,6 +159,7 @@ static void *repo_scan_thread(void *_rss)
 }
 
 void enumerate_chunks(struct repo *r, int hash_size, int tls_size,
+		      int nthreads,
 		      void (*thread_init)(void *st),
 		      void (*got_chunk)(void *st, int section,
 					const char *dir, int dirfd,
@@ -176,7 +177,7 @@ void enumerate_chunks(struct repo *r, int hash_size, int tls_size,
 	pthread_mutex_init(&rss.lock, NULL);
 	rss.section = 0;
 
-	run_threads(repo_scan_thread, &rss, 128);
+	run_threads(repo_scan_thread, &rss, nthreads);
 
 	pthread_mutex_destroy(&rss.lock);
 }

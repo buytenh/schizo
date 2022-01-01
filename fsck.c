@@ -154,7 +154,7 @@ int fsck(int argc, char *argv[])
 
 	num_images = enumerate_images(&images, &rs);
 
-	enumerate_image_chunks(chunks, hash_size, num_images, &images);
+	enumerate_image_chunks(chunks, hash_size, num_images, &images, 128);
 
 	num = 0;
 
@@ -165,7 +165,7 @@ int fsck(int argc, char *argv[])
 
 		enumerate_chunks(r, hash_size,
 				 sizeof(struct fsck_thread_state),
-				 fsck_thread_init, got_chunk,
+				 128, fsck_thread_init, got_chunk,
 				 fsck_thread_deinit);
 	}
 

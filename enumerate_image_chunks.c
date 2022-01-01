@@ -165,7 +165,8 @@ static void *image_scan_thread(void *_st)
 }
 
 void enumerate_image_chunks(struct iv_avl_tree *chunks, int hash_size,
-			    int num_images, struct iv_avl_tree *images)
+			    int num_images, struct iv_avl_tree *images,
+			    int nthreads)
 {
 	int compare_chunks(const struct iv_avl_node *_a,
 			   const struct iv_avl_node *_b)
@@ -192,7 +193,7 @@ void enumerate_image_chunks(struct iv_avl_tree *chunks, int hash_size,
 	for (i = 0; i < 65536; i++)
 		pthread_mutex_init(&st.lock_chunks[i], NULL);
 
-	run_threads(image_scan_thread, &st, 2 * sysconf(_SC_NPROCESSORS_ONLN));
+	run_threads(image_scan_thread, &st, nthreads);
 	printf("\n");
 
 	pthread_mutex_destroy(&st.lock_images);

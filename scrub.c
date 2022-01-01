@@ -130,6 +130,7 @@ int scrub(int argc, char *argv[])
 
 		enumerate_chunks(r, hash_size,
 				 sizeof(struct scrub_thread_state),
+				 4 * sysconf(_SC_NPROCESSORS_ONLN),
 				 scrub_thread_init, scrub_chunk,
 				 scrub_thread_deinit);
 

@@ -126,7 +126,7 @@ int gc(int argc, char *argv[])
 
 	num_images = enumerate_images(&images, &rs);
 
-	enumerate_image_chunks(chunks, hash_size, num_images, &images);
+	enumerate_image_chunks(chunks, hash_size, num_images, &images, 128);
 
 	iv_list_for_each (lh, &rs.repos) {
 		r = iv_container_of(lh, struct repo, list);
@@ -134,7 +134,7 @@ int gc(int argc, char *argv[])
 		num_gcd = 0;
 
 		enumerate_chunks(r, hash_size, sizeof(struct gc_thread_state),
-				 gc_thread_init, check_gc_chunk,
+				 128, gc_thread_init, check_gc_chunk,
 				 gc_thread_deinit);
 
 		if (num_gcd)

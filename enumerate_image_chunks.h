@@ -35,7 +35,8 @@ struct chunk *find_chunk(struct iv_avl_tree *tree,
 			 const uint8_t *hash, int hash_size);
 
 void enumerate_image_chunks(struct iv_avl_tree *chunks, int hash_size,
-			    int num_images, struct iv_avl_tree *images);
+			    int num_images, struct iv_avl_tree *images,
+			    int nthreads);
 
 
 #endif

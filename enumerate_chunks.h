@@ -23,6 +23,7 @@
 #include "reposet.h"
 
 void enumerate_chunks(struct repo *r, int hash_size, int tls_size,
+		      int nthreads,
 		      void (*thread_init)(void *st),
 		      void (*got_chunk)(void *st, int section,
 					const char *dir, int dirfd,
