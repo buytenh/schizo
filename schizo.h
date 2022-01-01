@@ -25,6 +25,7 @@
 extern int block_size;
 extern int hash_algo;
 extern int hash_size;
+extern int thread_limit;
 
 extern struct reposet rs;
 

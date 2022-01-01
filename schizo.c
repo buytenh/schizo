@@ -33,6 +33,7 @@ int splitimage(int argc, char *argv[]);
 int block_size = 1048576;
 int hash_algo = GCRY_MD_SHA512;
 int hash_size;
+int thread_limit;
 
 struct reposet rs;
 
@@ -72,6 +73,7 @@ static void usage(const char *argv0)
 	fprintf(stderr, "  -b, --block-size=SIZE   hash block size\n");
 	fprintf(stderr, "  -h, --hash-algo=ALGO    hash algorithm\n");
 	fprintf(stderr, "  -r, --repository=DIR    repository\n");
+	fprintf(stderr, "  -t, --thread-limit=LIM  worker thread limit\n");
 }
 
 int main(int argc, char *argv[])
@@ -86,6 +88,7 @@ int main(int argc, char *argv[])
 		{ "repository", required_argument, 0, 'r' },
 		{ "scrub", no_argument, 0, 's' },
 		{ "splitimage", no_argument, 0, 'S' },
+		{ "thread-limit", required_argument, 0, 't' },
 		{ 0, 0, 0, 0 },
 	};
 	int ret;
@@ -100,7 +103,7 @@ int main(int argc, char *argv[])
 	while (1) {
 		int c;
 
-		c = getopt_long(argc, argv, "b:h:r:", long_options, NULL);
+		c = getopt_long(argc, argv, "b:h:r:t:", long_options, NULL);
 		if (c == -1)
 			break;
 
@@ -147,6 +150,19 @@ int main(int argc, char *argv[])
 
 		case 'S':
 			set_tool(TOOL_SPLITIMAGE);
+			break;
+
+		case 't':
+			if (sscanf(optarg, "%i", &thread_limit) != 1) {
+				fprintf(stderr, "cannot parse thread limit: "
+						"%s\n", optarg);
+				return 1;
+			}
+			if (thread_limit < 1) {
+				fprintf(stderr, "thread limit must be a "
+						"positive integer\n");
+				return 1;
+			}
 			break;
 
 		case '?':

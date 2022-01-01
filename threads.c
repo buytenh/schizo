@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <string.h>
+#include "schizo.h"
 #include "threads.h"
 
 void run_threads(void *(*handler)(void *), void *cookie, int nthreads)
@@ -28,6 +29,9 @@ void run_threads(void *(*handler)(void *), void *cookie, int nthreads)
 	pthread_t tid[nthreads];
 	int ret;
 	int i;
+
+	if (thread_limit && thread_limit < nthreads)
+		nthreads = thread_limit;
 
 	for (i = 0; i < nthreads; i++) {
 		ret = pthread_create(&tid[i], NULL, handler, cookie);
