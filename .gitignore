@@ -1,6 +1,6 @@
 fsck
 gc
-repoinit
+init
 repomount
 scrub
 splitimage
