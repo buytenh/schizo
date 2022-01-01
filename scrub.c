@@ -17,6 +17,8 @@
  * Boston, MA 02110-1301, USA.
  */
 
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -27,10 +29,12 @@
 #include "rw.h"
 #include "schizo.h"
 
+static struct repo *r;
 static uint64_t num;
 static uint64_t num_mismatch;
 
 struct scrub_thread_state {
+	int		corruptdir;
 	uint8_t		*buf;
 	size_t		buf_size;
 	uint64_t	num;
@@ -41,10 +45,51 @@ static void scrub_thread_init(void *_sts)
 {
 	struct scrub_thread_state *sts = _sts;
 
+	sts->corruptdir = r->corruptdir;
 	sts->buf = NULL;
 	sts->buf_size = 0;
 	sts->num = 0;
 	sts->num_mismatch = 0;
+}
+
+static int try_open_corruptdir(struct scrub_thread_state *sts)
+{
+	int dir;
+
+	dir = openat(r->repodir, "corrupt", O_DIRECTORY);
+	if (dir < 0) {
+		if (errno == ENOENT) {
+			int ret;
+
+			ret = mkdirat(r->repodir, "corrupt", 0777);
+			if (ret < 0 && errno != EEXIST) {
+				perror("mkdirat");
+				return -1;
+			}
+
+			dir = openat(r->repodir, "corrupt", O_DIRECTORY);
+		}
+
+		if (dir < 0) {
+			perror("openat");
+			return -1;
+		}
+	}
+
+	sts->corruptdir = dir;
+
+	return 0;
+}
+
+static int use_corruptdir(struct scrub_thread_state *sts)
+{
+	if (sts->corruptdir == -1 && try_open_corruptdir(sts) < 0)
+		sts->corruptdir = -2;
+
+	if (sts->corruptdir == -2)
+		return 0;
+
+	return 1;
 }
 
 static void scrub_chunk(void *_sts, int section, const char *dir,
@@ -52,6 +97,7 @@ static void scrub_chunk(void *_sts, int section, const char *dir,
 {
 	struct scrub_thread_state *sts = _sts;
 	int fd;
+	int corrupt;
 	struct stat statbuf;
 	uint8_t hash2[hash_size];
 
@@ -60,6 +106,8 @@ static void scrub_chunk(void *_sts, int section, const char *dir,
 		perror("openat");
 		return;
 	}
+
+	corrupt = 0;
 
 	if (fstat(fd, &statbuf) < 0) {
 		perror("fstat");
@@ -90,6 +138,7 @@ static void scrub_chunk(void *_sts, int section, const char *dir,
 
 	if (xpread(fd, sts->buf, statbuf.st_size, 0) != statbuf.st_size) {
 		fprintf(stderr, "short read scrubbing %s/%s\n", dir, name);
+		corrupt = 1;
 		goto out;
 	}
 
@@ -99,15 +148,24 @@ static void scrub_chunk(void *_sts, int section, const char *dir,
 	if (memcmp(hash, hash2, hash_size)) {
 		fprintf(stderr, "hash mismatch in %s/%s\n", dir, name);
 		sts->num_mismatch++;
+		corrupt = 1;
 	}
 
 out:
+	if (corrupt && use_corruptdir(sts)) {
+		renameat2(dirfd, name, sts->corruptdir, name,
+			  RENAME_NOREPLACE);
+	}
+
 	close(fd);
 }
 
 static void scrub_thread_deinit(void *_sts)
 {
 	struct scrub_thread_state *sts = _sts;
+
+	if (sts->corruptdir != -1 && sts->corruptdir != r->corruptdir)
+		close(sts->corruptdir);
 
 	num += sts->num;
 	num_mismatch += sts->num_mismatch;
@@ -121,8 +179,6 @@ int scrub(int argc, char *argv[])
 		return -1;
 
 	iv_list_for_each (lh, &rs.repos) {
-		struct repo *r;
-
 		r = iv_container_of(lh, struct repo, list);
 
 		num = 0;

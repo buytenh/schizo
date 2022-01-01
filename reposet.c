@@ -50,6 +50,7 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 {
 	int repodir;
 	int chunkdir;
+	int corruptdir;
 	int deldir;
 	int imagedir;
 	struct repo *r;
@@ -64,12 +65,16 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 		return -1;
 	}
 
+	corruptdir = openat(repodir, "corrupt", O_DIRECTORY);
+
 	deldir = openat(repodir, "deleted", O_DIRECTORY);
 
 	imagedir = openat(repodir, "images", O_DIRECTORY);
 	if (imagedir < 0) {
 		if (deldir != -1)
 			close(deldir);
+		if (corruptdir != -1)
+			close(corruptdir);
 		close(chunkdir);
 		close(repodir);
 		return -1;
@@ -80,6 +85,8 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 		close(imagedir);
 		if (deldir != -1)
 			close(deldir);
+		if (corruptdir != -1)
+			close(corruptdir);
 		close(chunkdir);
 		return -1;
 	}
@@ -88,6 +95,7 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 	r->path = strdup(path);
 	r->repodir = repodir;
 	r->chunkdir = chunkdir;
+	r->corruptdir = corruptdir;
 	r->deldir = deldir;
 	r->imagedir = imagedir;
 	r->tmpdir = -1;

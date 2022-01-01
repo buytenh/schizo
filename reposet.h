@@ -34,6 +34,7 @@ struct repo {
 	const char		*path;
 	int			repodir;
 	int			chunkdir;
+	int			corruptdir;
 	int			deldir;
 	int			imagedir;
 	int			tmpdir;
