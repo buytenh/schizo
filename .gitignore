@@ -1,6 +1,2 @@
-fsck
-gc
-init
 repomount
-scrub
-splitimage
+schizo

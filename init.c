@@ -23,14 +23,16 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
+#include "schizo.h"
 
-int main(int argc, char *argv[])
+int init(int argc, char *argv[])
 {
 	int chunkdir;
 	int i;
+
+	if (argc)
+		return -1;
 
 	if (mkdir("chunks", 0777) < 0 && errno != EEXIST) {
 		perror("mkdir");

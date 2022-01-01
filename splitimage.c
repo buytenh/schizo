@@ -20,30 +20,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
-#include <gcrypt.h>
-#include <getopt.h>
 #include <limits.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include "reposet.h"
 #include "rw.h"
+#include "schizo.h"
 
-static int block_size = 1048576;
-static int hash_algo = GCRY_MD_SHA512;
-static int hash_size;
-
-static struct reposet rs;
-
-int main(int argc, char *argv[])
+int splitimage(int argc, char *argv[])
 {
-	static struct option long_options[] = {
-		{ "block-size", required_argument, 0, 'b' },
-		{ "hash-algo", required_argument, 0, 'h' },
-		{ "hash-algorithm", required_argument, 0, 'h' },
-		{ "repository", required_argument, 0, 'r' },
-		{ 0, 0, 0, 0 },
-	};
 	int fd;
 	int64_t hashes_len;
 	uint8_t *hashes;
@@ -54,76 +36,10 @@ int main(int argc, char *argv[])
 	struct timespec times[2];
 	uint64_t i;
 
-	if (!gcry_check_version(GCRYPT_VERSION)) {
-		fprintf(stderr, "libgcrypt version mismatch\n");
-		return 1;
-	}
+	if (argc != 3)
+		return -1;
 
-	reposet_init(&rs);
-
-	while (1) {
-		int c;
-
-		c = getopt_long(argc, argv, "b:h:r:", long_options, NULL);
-		if (c == -1)
-			break;
-
-		switch (c) {
-		case 'b':
-			if (sscanf(optarg, "%i", &block_size) != 1) {
-				fprintf(stderr, "cannot parse block size: "
-						"%s\n", optarg);
-				return 1;
-			}
-			break;
-
-		case 'h':
-			hash_algo = gcry_md_map_name(optarg);
-			if (hash_algo == 0) {
-				fprintf(stderr, "unknown hash algorithm "
-						"name: %s\n", optarg);
-				return 1;
-			}
-			break;
-
-		case 'r':
-			if (reposet_add_repo(&rs, optarg) < 0) {
-				fprintf(stderr, "can't add repo %s\n", optarg);
-				return 1;
-			}
-			break;
-
-		case '?':
-			return 1;
-
-		default:
-			abort();
-		}
-	}
-
-	if (argc - optind != 3) {
-		fprintf(stderr, "syntax: %s [opts] <img> "
-				"<img.img> <img.map>\n", argv[0]);
-		fprintf(stderr, " -b, --block-size=SIZE    hash block size\n");
-		fprintf(stderr, " -h, --hash-algo=ALGO     hash algorithm\n");
-		fprintf(stderr, " -r, --repository=DIR     repository\n");
-		return 1;
-	}
-
-	if (block_size <= 0 || block_size % 4096) {
-		fprintf(stderr, "block size must be a multiple of 4096\n");
-		return 1;
-	}
-
-	if (iv_list_empty(&rs.repos)) {
-		fprintf(stderr, "missing repositories\n");
-		return 1;
-	}
-
-	hash_size = gcry_md_get_algo_dlen(hash_algo);
-	reposet_set_hash_size(&rs, hash_size);
-
-	fd = open(argv[optind + 2], O_RDONLY);
+	fd = open(argv[2], O_RDONLY);
 	if (fd < 0) {
 		perror("open");
 		return 1;
@@ -151,7 +67,7 @@ int main(int argc, char *argv[])
 
 	close(fd);
 
-	fd = open(argv[optind + 1], O_RDONLY);
+	fd = open(argv[1], O_RDONLY);
 	if (fd < 0) {
 		perror("open");
 		return 1;
@@ -193,7 +109,7 @@ int main(int argc, char *argv[])
 
 	close(fd);
 
-	reposet_write_image(&rs, argv[optind], hashes, num_blocks, times);
+	reposet_write_image(&rs, argv[0], hashes, num_blocks, times);
 
 	return 0;
 }
