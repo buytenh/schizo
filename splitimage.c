@@ -1,6 +1,6 @@
 /*
  * schizo, a set of tools for managing split disk images
- * Copyright (C) 2020 Lennert Buytenhek
+ * Copyright (C) 2020, 2022 Lennert Buytenhek
  *
  * This library is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License version
@@ -20,26 +20,35 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <iv_avl.h>
+#include <iv_list.h>
 #include <limits.h>
+#include <string.h>
+#include "enumerate_chunks.h"
 #include "rw.h"
 #include "schizo.h"
 
-int splitimage(int argc, char *argv[])
+struct chunk {
+	struct iv_avl_node	an;
+	uint64_t		index;
+};
+
+static uint8_t *hashes;
+static uint64_t num;
+static struct iv_avl_tree chunks_hash[65536];
+static uint64_t num_removed;
+static struct iv_avl_tree chunks_index;
+
+struct splitimage_thread_state {
+	uint64_t	num_removed;
+};
+
+static int read_hashes(const char *mapfile)
 {
 	int fd;
 	int64_t hashes_len;
-	uint8_t *hashes;
-	struct stat buf;
-	uint64_t size;
-	uint64_t num_blocks;
-	uint32_t last_block_size;
-	struct timespec times[2];
-	uint64_t i;
 
-	if (argc != 3)
-		return -1;
-
-	fd = open(argv[2], O_RDONLY);
+	fd = open(mapfile, O_RDONLY);
 	if (fd < 0) {
 		perror("open");
 		return 1;
@@ -51,8 +60,9 @@ int splitimage(int argc, char *argv[])
 		return 1;
 	}
 
-	if (hashes_len < 0 || hashes_len > INT_MAX) {
-		fprintf(stderr, "out of memory\n");
+	if (hashes_len > INT_MAX || (hashes_len % hash_size) != 0) {
+		fprintf(stderr, "invalid map file length %" PRId64 "\n",
+			hashes_len);
 		return 1;
 	}
 
@@ -67,6 +77,178 @@ int splitimage(int argc, char *argv[])
 
 	close(fd);
 
+	num = hashes_len / hash_size;
+
+	return 0;
+}
+
+static int compare_chunks_hash(const struct iv_avl_node *_a,
+			       const struct iv_avl_node *_b)
+{
+	const struct chunk *a = iv_container_of(_a, struct chunk, an);
+	const struct chunk *b = iv_container_of(_b, struct chunk, an);
+
+	return memcmp(hashes + (a->index * hash_size),
+		      hashes + (b->index * hash_size), hash_size);
+}
+
+static struct chunk *find_chunk(struct iv_avl_tree *tree, const uint8_t *hash)
+{
+	struct iv_avl_node *an;
+
+	an = tree->root;
+	while (an != NULL) {
+		struct chunk *c;
+		int ret;
+
+		c = iv_container_of(an, struct chunk, an);
+
+		ret = memcmp(hash, hashes + (c->index * hash_size), hash_size);
+		if (ret == 0)
+			return c;
+
+		if (ret < 0)
+			an = an->left;
+		else
+			an = an->right;
+	}
+
+	return NULL;
+}
+
+static void build_tree_hash(void)
+{
+	uint64_t i;
+
+	for (i = 0; i < 65536; i++)
+		INIT_IV_AVL_TREE(&chunks_hash[i], compare_chunks_hash);
+
+	for (i = 0; i < num; i++) {
+		uint8_t *hash;
+		int section;
+		struct chunk *c;
+
+		hash = hashes + i * hash_size;
+		section = (hash[0] << 8) | hash[1];
+
+		c = find_chunk(&chunks_hash[section], hash);
+		if (c == NULL) {
+			c = malloc(sizeof(*c));
+			if (c == NULL) {
+				fprintf(stderr, "out of memory\n");
+				exit(EXIT_FAILURE);
+			}
+
+			c->index = i;
+			iv_avl_tree_insert(&chunks_hash[section], &c->an);
+		}
+	}
+}
+
+static void splitimage_thread_init(void *_sts)
+{
+	struct splitimage_thread_state *sts = _sts;
+
+	sts->num_removed = 0;
+}
+
+static void got_chunk(void *_sts, int section, const char *dir, int dirfd,
+		      const char *name, const uint8_t *hash)
+{
+	struct splitimage_thread_state *sts = _sts;
+	struct chunk *c;
+
+	c = find_chunk(&chunks_hash[section], hash);
+	if (c != NULL) {
+		iv_avl_tree_delete(&chunks_hash[section], &c->an);
+		free(c);
+
+		sts->num_removed++;
+	}
+}
+
+static void splitimage_thread_deinit(void *_sts)
+{
+	struct splitimage_thread_state *sts = _sts;
+
+	num_removed += sts->num_removed;
+}
+
+static void scan_repos(void)
+{
+	struct iv_list_head *lh;
+
+	num_removed = 0;
+	iv_list_for_each (lh, &rs.repos) {
+		struct repo *r;
+
+		r = iv_container_of(lh, struct repo, list);
+
+		enumerate_chunks(r, hash_size,
+				 sizeof(struct splitimage_thread_state),
+				 128, splitimage_thread_init, got_chunk,
+				 splitimage_thread_deinit);
+	}
+}
+
+static int compare_chunks_index(const struct iv_avl_node *_a,
+				const struct iv_avl_node *_b)
+{
+	const struct chunk *a = iv_container_of(_a, struct chunk, an);
+	const struct chunk *b = iv_container_of(_b, struct chunk, an);
+
+	if (a->index < b->index)
+		return -1;
+	if (a->index > b->index)
+		return 1;
+
+	return 0;
+}
+
+static void insert_tree_index(struct iv_avl_node *an)
+{
+	if (an->left != NULL)
+		insert_tree_index(an->left);
+	if (an->right != NULL)
+		insert_tree_index(an->right);
+
+	iv_avl_tree_insert(&chunks_index, an);
+}
+
+static void build_tree_index(void)
+{
+	int i;
+
+	INIT_IV_AVL_TREE(&chunks_index, compare_chunks_index);
+
+	for (i = 0; i < 65536; i++) {
+		if (chunks_hash[i].root != NULL)
+			insert_tree_index(chunks_hash[i].root);
+	}
+}
+
+int splitimage(int argc, char *argv[])
+{
+	int fd;
+	struct stat buf;
+	struct timespec times[2];
+	uint64_t num_blocks;
+	uint32_t last_block_size;
+	uint64_t i;
+	struct iv_avl_node *an;
+
+	if (argc != 3)
+		return -1;
+
+	if (read_hashes(argv[2]))
+		return 1;
+
+	build_tree_hash();
+
+	scan_repos();
+
+	build_tree_index();
+
 	fd = open(argv[1], O_RDONLY);
 	if (fd < 0) {
 		perror("open");
@@ -78,30 +260,39 @@ int splitimage(int argc, char *argv[])
 		return 1;
 	}
 
-	size = buf.st_size;
-	num_blocks = (size + block_size - 1) / block_size;
-	last_block_size = size - (num_blocks - 1) * block_size;
-
 	times[0].tv_sec = 0;
 	times[0].tv_nsec = UTIME_OMIT;
 	times[1].tv_sec = buf.st_mtim.tv_sec;
 	times[1].tv_nsec = buf.st_mtim.tv_nsec;
 
-	for (i = 0; i < num_blocks; i++) {
+	num_blocks = (buf.st_size + block_size - 1) / block_size;
+	if (num_blocks != num) {
+		fprintf(stderr, "image file has %" PRId64 " blocks "
+				"while map file has %" PRId64 "\n",
+			num_blocks, num);
+		return 1;
+	}
+
+	last_block_size = buf.st_size - (num - 1) * block_size;
+
+	i = 0;
+	iv_avl_tree_for_each (an, &chunks_index) {
+		struct chunk *c;
 		uint32_t this_block_size;
 
-		if ((i % 1000) == 0) {
-			printf("\r%jd/%jd", (intmax_t)i, (intmax_t)num_blocks);
-			fflush(stdout);
-		}
+		c = iv_container_of(an, struct chunk, an);
 
-		if (i == num_blocks - 1)
+		printf("%" PRId64 "/%" PRId64 " (block %" PRId64 ")\r",
+		       ++i, num - num_removed, c->index);
+		fflush(stdout);
+
+		if (c->index == num - 1)
 			this_block_size = last_block_size;
 		else
 			this_block_size = block_size;
 
-		reposet_write_chunk_fromfd(&rs, hashes + i * hash_size,
-					   fd, i * block_size,
+		reposet_write_chunk_fromfd(&rs, hashes + c->index * hash_size,
+					   fd, c->index * block_size,
 					   this_block_size, times);
 	}
 
@@ -109,7 +300,7 @@ int splitimage(int argc, char *argv[])
 
 	close(fd);
 
-	reposet_write_image(&rs, argv[0], hashes, num_blocks, times);
+	reposet_write_image(&rs, argv[0], hashes, num, times);
 
 	return 0;
 }
