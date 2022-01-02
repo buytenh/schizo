@@ -23,10 +23,12 @@
 #include <iv_avl.h>
 #include <iv_list.h>
 #include <limits.h>
+#include <pthread.h>
 #include <string.h>
 #include "enumerate_chunks.h"
 #include "rw.h"
 #include "schizo.h"
+#include "threads.h"
 
 struct chunk {
 	struct iv_avl_node	an;
@@ -227,15 +229,51 @@ static void build_tree_index(void)
 	}
 }
 
+static int fd;
+static struct timespec times[2];
+static uint32_t last_block_size;
+static pthread_mutex_t lock;
+static uint64_t i;
+static struct iv_avl_node *an;
+
+static void *split_thread(void *_dummy)
+{
+	pthread_mutex_lock(&lock);
+
+	while (an != NULL) {
+		struct chunk *c;
+		uint32_t this_block_size;
+
+		c = iv_container_of(an, struct chunk, an);
+		an = iv_avl_tree_next(an);
+
+		printf("%" PRId64 "/%" PRId64 " (block %" PRId64 ")\r",
+		       ++i, num - num_removed, c->index);
+		fflush(stdout);
+
+		pthread_mutex_unlock(&lock);
+
+		if (c->index == num - 1)
+			this_block_size = last_block_size;
+		else
+			this_block_size = block_size;
+
+		reposet_write_chunk_fromfd(&rs, hashes + c->index * hash_size,
+					   fd, c->index * block_size,
+					   this_block_size, times);
+
+		pthread_mutex_lock(&lock);
+	}
+
+	pthread_mutex_unlock(&lock);
+
+	return NULL;
+}
+
 int splitimage(int argc, char *argv[])
 {
-	int fd;
 	struct stat buf;
-	struct timespec times[2];
 	uint64_t num_blocks;
-	uint32_t last_block_size;
-	uint64_t i;
-	struct iv_avl_node *an;
 
 	if (argc != 3)
 		return -1;
@@ -275,27 +313,11 @@ int splitimage(int argc, char *argv[])
 
 	last_block_size = buf.st_size - (num - 1) * block_size;
 
+	pthread_mutex_init(&lock, NULL);
 	i = 0;
-	iv_avl_tree_for_each (an, &chunks_index) {
-		struct chunk *c;
-		uint32_t this_block_size;
+	an = iv_avl_tree_min(&chunks_index);
 
-		c = iv_container_of(an, struct chunk, an);
-
-		printf("%" PRId64 "/%" PRId64 " (block %" PRId64 ")\r",
-		       ++i, num - num_removed, c->index);
-		fflush(stdout);
-
-		if (c->index == num - 1)
-			this_block_size = last_block_size;
-		else
-			this_block_size = block_size;
-
-		reposet_write_chunk_fromfd(&rs, hashes + c->index * hash_size,
-					   fd, c->index * block_size,
-					   this_block_size, times);
-	}
-
+	run_threads(split_thread, NULL, 128);
 	printf("\n");
 
 	close(fd);
