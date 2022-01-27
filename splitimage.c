@@ -37,6 +37,7 @@ struct chunk {
 
 static uint8_t *hashes;
 static uint64_t num;
+static uint64_t num_duplicate;
 static struct iv_avl_tree chunks_hash[65536];
 static uint64_t num_removed;
 static struct iv_avl_tree chunks_index;
@@ -122,6 +123,7 @@ static void build_tree_hash(void)
 {
 	uint64_t i;
 
+	num_duplicate = 0;
 	for (i = 0; i < 65536; i++)
 		INIT_IV_AVL_TREE(&chunks_hash[i], compare_chunks_hash);
 
@@ -143,6 +145,8 @@ static void build_tree_hash(void)
 
 			c->index = i;
 			iv_avl_tree_insert(&chunks_hash[section], &c->an);
+		} else {
+			num_duplicate++;
 		}
 	}
 }
@@ -248,7 +252,7 @@ static void *split_thread(void *_dummy)
 		an = iv_avl_tree_next(an);
 
 		printf("%" PRId64 "/%" PRId64 " (block %" PRId64 ")\r",
-		       ++i, num - num_removed, c->index);
+		       ++i, num - num_duplicate - num_removed, c->index);
 		fflush(stdout);
 
 		pthread_mutex_unlock(&lock);
