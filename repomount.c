@@ -751,11 +751,7 @@ static int repomount_readdir(const char *path, void *buf,
 
 			len = strlen(dent->d_name);
 
-			d = malloc(sizeof(*d) + len + 1);
-			if (d == NULL) {
-				ret = -ENOMEM;
-				break;
-			}
+			d = alloca(sizeof(*d) + len + 1);
 
 			memcpy(d->name, dent->d_name, len);
 			d->name[len] = 0;
