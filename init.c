@@ -23,16 +23,38 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <string.h>
 #include <unistd.h>
 #include "schizo.h"
 
 int init(int argc, char *argv[])
 {
-	int chunkdir;
+	int pattern_length;
+	uint8_t *pattern;
 	int i;
+	int chunkdir;
 
-	if (argc)
+	if (argc == 0) {
+		pattern_length = 1;
+		pattern = alloca(pattern_length);
+
+		pattern[0] = 1;
+	} else if (argc == 1) {
+		pattern_length = strlen(argv[0]);
+		pattern = alloca(pattern_length);
+
+		for (i = 0; i < pattern_length; i++) {
+			char c;
+
+			c = argv[0][i];
+			if (c == 'X' || c == 'x')
+				pattern[i] = 1;
+			else
+				pattern[i] = 0;
+		}
+	} else {
 		return -1;
+	}
 
 	if (mkdir("chunks", 0777) < 0 && errno != EEXIST) {
 		perror("mkdir");
@@ -64,12 +86,17 @@ int init(int argc, char *argv[])
 		}
 
 		for (j = 0; j < 256; j++) {
-			snprintf(name, sizeof(name), "%.2x", j);
+			int section;
 
-			if (mkdirat(dirfd, name, 0777) < 0 &&
-			    errno != EEXIST) {
-				perror("mkdir");
-				return 1;
+			section = (i << 8) | j;
+			if (pattern[section % pattern_length]) {
+				snprintf(name, sizeof(name), "%.2x", j);
+
+				if (mkdirat(dirfd, name, 0777) < 0 &&
+				    errno != EEXIST) {
+					perror("mkdir");
+					return 1;
+				}
 			}
 		}
 
