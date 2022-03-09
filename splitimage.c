@@ -38,6 +38,7 @@ struct chunk {
 static uint8_t *hashes;
 static uint64_t num;
 static uint64_t num_duplicate;
+static int section_used[65536];
 static struct iv_avl_tree chunks_hash[65536];
 static uint64_t num_removed;
 static struct iv_avl_tree chunks_index;
@@ -124,6 +125,7 @@ static void build_tree_hash(void)
 	uint64_t i;
 
 	num_duplicate = 0;
+	memset(&section_used, 0, sizeof(section_used));
 	for (i = 0; i < 65536; i++)
 		INIT_IV_AVL_TREE(&chunks_hash[i], compare_chunks_hash);
 
@@ -158,6 +160,11 @@ static void splitimage_thread_init(void *_sts)
 	sts->num_removed = 0;
 }
 
+static void got_section(void *_sts, int section)
+{
+	section_used[section] = 1;
+}
+
 static void got_chunk(void *_sts, int section, const char *dir, int dirfd,
 		      const char *name, const uint8_t *hash)
 {
@@ -180,9 +187,22 @@ static void splitimage_thread_deinit(void *_sts)
 	num_removed += sts->num_removed;
 }
 
+static void delete_chunk(struct iv_avl_node *an)
+{
+	if (an->left != NULL)
+		delete_chunk(an->left);
+	if (an->right != NULL)
+		delete_chunk(an->right);
+
+	free(iv_container_of(an, struct chunk, an));
+
+	num_removed++;
+}
+
 static void scan_repos(void)
 {
 	struct iv_list_head *lh;
+	int i;
 
 	num_removed = 0;
 	iv_list_for_each (lh, &rs.repos) {
@@ -192,8 +212,15 @@ static void scan_repos(void)
 
 		enumerate_chunks(r, hash_size,
 				 sizeof(struct splitimage_thread_state),
-				 128, splitimage_thread_init, NULL,
+				 128, splitimage_thread_init, got_section,
 				 got_chunk, splitimage_thread_deinit);
+	}
+
+	for (i = 0; i < 65536; i++) {
+		if (!section_used[i] && chunks_hash[i].root != NULL) {
+			delete_chunk(chunks_hash[i].root);
+			chunks_hash[i].root = NULL;
+		}
 	}
 }
 
