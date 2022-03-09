@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <gcrypt.h>
 #include <iv_avl.h>
 #include <iv_list.h>
 #include <limits.h>
@@ -266,11 +267,38 @@ static uint32_t last_block_size;
 static pthread_mutex_t lock;
 static uint64_t i;
 static struct iv_avl_node *an;
+static int errors_seen;
+
+static int
+write_chunk(const uint8_t *expected_hash, uint64_t off, int datalen)
+{
+	uint8_t data[block_size];
+	uint8_t hash[hash_size];
+
+	if (xpread(fd, data, datalen, off) != datalen)
+		return 1;
+
+	gcry_md_hash_buffer(hash_algo, hash, data, datalen);
+
+	if (memcmp(expected_hash, hash, hash_size)) {
+		fprintf(stderr, "write_chunk: hash mismatch "
+				"at offset %jd\n", (intmax_t)off);
+		return 1;
+	}
+
+	if (reposet_write_chunk(&rs, hash, data, datalen, times) == 0)
+		return 1;
+
+	return 0;
+}
 
 static void *split_thread(void *_dummy)
 {
+	int err;
+
 	pthread_mutex_lock(&lock);
 
+	err = 0;
 	while (an != NULL) {
 		struct chunk *c;
 		uint32_t this_block_size;
@@ -285,9 +313,8 @@ static void *split_thread(void *_dummy)
 		else
 			this_block_size = block_size;
 
-		reposet_write_chunk_fromfd(&rs, hashes + c->index * hash_size,
-					   fd, c->index * block_size,
-					   this_block_size, times);
+		err |= write_chunk(hashes + c->index * hash_size,
+				   c->index * block_size, this_block_size);
 
 		pthread_mutex_lock(&lock);
 
@@ -295,6 +322,8 @@ static void *split_thread(void *_dummy)
 		       ++i, num - num_duplicate - num_removed, c->index);
 		fflush(stdout);
 	}
+
+	errors_seen |= err;
 
 	pthread_mutex_unlock(&lock);
 
@@ -347,13 +376,15 @@ int splitimage(int argc, char *argv[])
 	pthread_mutex_init(&lock, NULL);
 	i = 0;
 	an = iv_avl_tree_min(&chunks_index);
+	errors_seen = 0;
 
 	run_threads(split_thread, NULL, 128);
 	printf("\n");
 
 	close(fd);
 
-	reposet_write_image(&rs, argv[0], hashes, num, times);
+	if (!errors_seen)
+		reposet_write_image(&rs, argv[0], hashes, num, times);
 
 	return 0;
 }

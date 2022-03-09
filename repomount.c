@@ -354,8 +354,7 @@ static void write_dirty_chunk(struct repomount_file_info *fh,
 	times[1].tv_sec = c->last_write.tv_sec;
 	times[1].tv_nsec = c->last_write.tv_nsec;
 
-	copies = reposet_write_chunk_frombuf(&rs, hash, c->buf, c->length,
-					     times);
+	copies = reposet_write_chunk(&rs, hash, c->buf, c->length, times);
 	if (copies == 0) {
 		fprintf(stderr, "write_dirty_chunk: no copies written\n");
 		abort();

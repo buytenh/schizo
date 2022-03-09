@@ -494,10 +494,18 @@ static int ts_before(const struct timespec *a, const struct timespec *b)
 	return 0;
 }
 
-static int reposet_write_chunk(const struct reposet *rs, const uint8_t *hash,
-			       int (*fillcb)(struct repo *r, int fd),
-			       const struct timespec *times)
+int reposet_write_chunk(const struct reposet *rs, const uint8_t *hash,
+			const uint8_t *data, int datalen,
+			const struct timespec *times)
 {
+	int fillcb(struct repo *r, int fd)
+	{
+		if (xwrite(fd, data, datalen) != datalen)
+			return -1;
+
+		return 0;
+	}
+
 	char dirname[16];
 	char name[B64SIZE(rs->hash_size) + 1];
 	int copies;
@@ -543,59 +551,4 @@ static int reposet_write_chunk(const struct reposet *rs, const uint8_t *hash,
 	}
 
 	return copies;
-}
-
-int reposet_write_chunk_frombuf(const struct reposet *rs, const uint8_t *hash,
-				const uint8_t *data, int datalen,
-				const struct timespec *times)
-{
-	int fillcb(struct repo *r, int fd)
-	{
-		if (xwrite(fd, data, datalen) != datalen)
-			return -1;
-
-		return 0;
-	}
-
-	return reposet_write_chunk(rs, hash, fillcb, times);
-}
-
-int reposet_write_chunk_fromfd(const struct reposet *rs, const uint8_t *hash,
-			       int srcfd, uint64_t off, int datalen,
-			       const struct timespec *times)
-{
-	int fillcb(struct repo *r, int fd)
-	{
-		int offset;
-
-		offset = 0;
-		while (offset < datalen) {
-			loff_t off_in;
-			ssize_t ret;
-
-			off_in = off + offset;
-
-			do {
-				ret = copy_file_range(srcfd, &off_in, fd, NULL,
-						      datalen - offset, 0);
-			} while (ret < 0 && errno == EINTR);
-
-			if (ret < 0) {
-				perror("copy_file_range");
-				return -1;
-			}
-
-			if (ret == 0) {
-				fprintf(stderr, "reposet_write_chunk_fromfd: "
-						"source got EOF!\n");
-				return -1;
-			}
-
-			offset += ret;
-		}
-
-		return 0;
-	}
-
-	return reposet_write_chunk(rs, hash, fillcb, times);
 }
