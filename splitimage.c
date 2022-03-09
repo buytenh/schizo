@@ -278,10 +278,6 @@ static void *split_thread(void *_dummy)
 		c = iv_container_of(an, struct chunk, an);
 		an = iv_avl_tree_next(an);
 
-		printf("%" PRId64 "/%" PRId64 " (block %" PRId64 ")\r",
-		       ++i, num - num_duplicate - num_removed, c->index);
-		fflush(stdout);
-
 		pthread_mutex_unlock(&lock);
 
 		if (c->index == num - 1)
@@ -294,6 +290,10 @@ static void *split_thread(void *_dummy)
 					   this_block_size, times);
 
 		pthread_mutex_lock(&lock);
+
+		printf("\r%" PRId64 "/%" PRId64 " (block %" PRId64 ")",
+		       ++i, num - num_duplicate - num_removed, c->index);
+		fflush(stdout);
 	}
 
 	pthread_mutex_unlock(&lock);
