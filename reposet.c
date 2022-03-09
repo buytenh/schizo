@@ -298,7 +298,7 @@ int reposet_undelete_chunk(const struct reposet *rs, const uint8_t *hash)
 
 static int repo_write_file_tmpfile(struct repo *r, int dirfd,
 				   const char *name,
-				   int (*fillcb)(struct repo *r, int fd),
+				   const uint8_t *data, int datalen,
 				   const struct timespec *times)
 {
 	int fd;
@@ -314,7 +314,7 @@ static int repo_write_file_tmpfile(struct repo *r, int dirfd,
 		return 0;
 	}
 
-	if (fillcb(r, fd) < 0) {
+	if (xwrite(fd, data, datalen) != datalen) {
 		close(fd);
 		return 0;
 	}
@@ -381,7 +381,7 @@ static int use_tmpdir(struct repo *r)
 
 static int repo_write_file_fallback(struct repo *r, int dirfd,
 				    const char *name,
-				    int (*fillcb)(struct repo *r, int fd),
+				    const uint8_t *data, int datalen,
 				    const struct timespec *times)
 {
 	int fd;
@@ -393,7 +393,7 @@ static int repo_write_file_fallback(struct repo *r, int dirfd,
 		return 0;
 	}
 
-	if (fillcb(r, fd) < 0) {
+	if (xwrite(fd, data, datalen) != datalen) {
 		close(fd);
 		unlinkat(r->tmpdir, name, 0);
 		return 0;
@@ -419,21 +419,23 @@ static int repo_write_file_fallback(struct repo *r, int dirfd,
 }
 
 static int repo_write_file(struct repo *r, int dirfd, const char *name,
-			   int (*fillcb)(struct repo *r, int fd),
+			   const uint8_t *data, int datalen,
 			   const struct timespec *times)
 {
 	int ret;
 
 	ret = -1;
 
-	if (r->tmpdir == -1)
-		ret = repo_write_file_tmpfile(r, dirfd, name, fillcb, times);
+	if (r->tmpdir == -1) {
+		ret = repo_write_file_tmpfile(r, dirfd, name,
+					      data, datalen, times);
+	}
 
 	if (ret < 0) {
 		ret = 0;
 		if (use_tmpdir(r)) {
 			ret = repo_write_file_fallback(r, dirfd, name,
-						       fillcb, times);
+						       data, datalen, times);
 		}
 	}
 
@@ -444,15 +446,7 @@ static int repo_write_image(struct repo *r, const char *image,
 			    const uint8_t *hashes, uint64_t bytes,
 			    const struct timespec *times)
 {
-	int fillcb(struct repo *r, int fd)
-	{
-		if (xwrite(fd, hashes, bytes) != bytes)
-			return -1;
-
-		return 0;
-	}
-
-	return repo_write_file(r, r->imagedir, image, fillcb, times);
+	return repo_write_file(r, r->imagedir, image, hashes, bytes, times);
 }
 
 int reposet_write_image(const struct reposet *rs, const char *image,
@@ -498,14 +492,6 @@ int reposet_write_chunk(const struct reposet *rs, const uint8_t *hash,
 			const uint8_t *data, int datalen,
 			const struct timespec *times)
 {
-	int fillcb(struct repo *r, int fd)
-	{
-		if (xwrite(fd, data, datalen) != datalen)
-			return -1;
-
-		return 0;
-	}
-
 	char dirname[16];
 	char name[B64SIZE(rs->hash_size) + 1];
 	int copies;
@@ -538,7 +524,8 @@ int reposet_write_chunk(const struct reposet *rs, const uint8_t *hash,
 			}
 
 			copies++;
-		} else if (repo_write_file(r, dirfd, name, fillcb, times)) {
+		} else if (repo_write_file(r, dirfd, name,
+			   data, datalen, times)) {
 			copies++;
 		}
 
