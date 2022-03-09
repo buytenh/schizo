@@ -38,7 +38,6 @@ struct repo {
 	int			deldir;
 	int			imagedir;
 	int			tmpdir;
-	int			clone_failed;
 };
 
 struct image_info {

@@ -24,13 +24,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <linux/fs.h>
 #include <string.h>
-#include <sys/ioctl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <time.h>
-#include <unistd.h>
 #include "base64enc.h"
 #include "reposet.h"
 #include "rw.h"
@@ -99,7 +94,6 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 	r->deldir = deldir;
 	r->imagedir = imagedir;
 	r->tmpdir = -1;
-	r->clone_failed = 0;
 
 	return 0;
 }
@@ -572,25 +566,7 @@ int reposet_write_chunk_fromfd(const struct reposet *rs, const uint8_t *hash,
 {
 	int fillcb(struct repo *r, int fd)
 	{
-		struct file_clone_range arg;
 		int offset;
-
-		if (!r->clone_failed) {
-			arg.src_fd = srcfd;
-			arg.src_offset = off;
-			arg.src_length = datalen;
-			arg.dest_offset = 0;
-			if (ioctl(fd, FICLONERANGE, &arg) == 0)
-				return 0;
-
-			if (errno != EINVAL && errno != EOPNOTSUPP &&
-			    errno != EXDEV) {
-				perror("ioctl(FICLONERANGE)");
-				return -1;
-			}
-
-			r->clone_failed = 1;
-		}
 
 		offset = 0;
 		while (offset < datalen) {
