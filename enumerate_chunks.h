@@ -25,6 +25,7 @@
 void enumerate_chunks(struct repo *r, int hash_size, int tls_size,
 		      int nthreads,
 		      void (*thread_init)(void *st),
+		      void (*got_section)(void *st, int section),
 		      void (*got_chunk)(void *st, int section,
 					const char *dir, int dirfd,
 					const char *name, const uint8_t *hash),

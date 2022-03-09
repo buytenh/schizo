@@ -165,7 +165,7 @@ int fsck(int argc, char *argv[])
 
 		enumerate_chunks(r, hash_size,
 				 sizeof(struct fsck_thread_state),
-				 128, fsck_thread_init, got_chunk,
+				 128, fsck_thread_init, NULL, got_chunk,
 				 fsck_thread_deinit);
 	}
 

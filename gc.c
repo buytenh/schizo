@@ -134,7 +134,7 @@ int gc(int argc, char *argv[])
 		num_gcd = 0;
 
 		enumerate_chunks(r, hash_size, sizeof(struct gc_thread_state),
-				 128, gc_thread_init, check_gc_chunk,
+				 128, gc_thread_init, NULL, check_gc_chunk,
 				 gc_thread_deinit);
 
 		if (num_gcd)

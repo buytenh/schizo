@@ -192,8 +192,8 @@ static void scan_repos(void)
 
 		enumerate_chunks(r, hash_size,
 				 sizeof(struct splitimage_thread_state),
-				 128, splitimage_thread_init, got_chunk,
-				 splitimage_thread_deinit);
+				 128, splitimage_thread_init, NULL,
+				 got_chunk, splitimage_thread_deinit);
 	}
 }
 

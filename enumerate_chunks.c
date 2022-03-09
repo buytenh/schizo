@@ -34,6 +34,7 @@ struct repo_scan_state {
 	int			hash_size;
 	int			tls_size;
 	void			(*thread_init)(void *st);
+	void			(*got_section)(void *st, int section);
 	void			(*got_chunk)(void *st, int section,
 					     const char *dir, int dirfd,
 					     const char *name,
@@ -66,6 +67,9 @@ static void scan_section(struct repo_scan_state *rss, void *st, int section)
 		close(dirfd);
 		return;
 	}
+
+	if (rss->got_section != NULL)
+		rss->got_section(st, section);
 
 	while (1) {
 		struct dirent *dent;
@@ -161,6 +165,7 @@ static void *repo_scan_thread(void *_rss)
 void enumerate_chunks(struct repo *r, int hash_size, int tls_size,
 		      int nthreads,
 		      void (*thread_init)(void *st),
+		      void (*got_section)(void *st, int section),
 		      void (*got_chunk)(void *st, int section,
 					const char *dir, int dirfd,
 					const char *name, const uint8_t *hash),
@@ -172,6 +177,7 @@ void enumerate_chunks(struct repo *r, int hash_size, int tls_size,
 	rss.hash_size = hash_size;
 	rss.tls_size = tls_size;
 	rss.thread_init = thread_init;
+	rss.got_section = got_section;
 	rss.got_chunk = got_chunk;
 	rss.thread_deinit = thread_deinit;
 	pthread_mutex_init(&rss.lock, NULL);
