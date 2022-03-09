@@ -23,16 +23,82 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <string.h>
 #include <unistd.h>
 #include "schizo.h"
+#include "threads.h"
+
+static int pattern_length;
+static uint8_t *pattern;
+static int chunkdir;
+
+static pthread_mutex_t lock;
+static int dir_index;
+static int err;
+
+static void *mkdir_thread(void *_dummy)
+{
+	pthread_mutex_lock(&lock);
+
+	while (1) {
+		int i;
+		char name[16];
+		int dirfd;
+		int j;
+
+		i = dir_index;
+		if (i == 256)
+			break;
+
+		dir_index++;
+
+		snprintf(name, sizeof(name), "%.2x", i);
+
+		if (mkdirat(chunkdir, name, 0777) < 0 && errno != EEXIST) {
+			perror("mkdir");
+			err = 1;
+			break;
+		}
+
+		pthread_mutex_unlock(&lock);
+
+		dirfd = openat(chunkdir, name, O_DIRECTORY | O_PATH);
+		if (dirfd < 0) {
+			perror("open");
+			err = 1;
+			return NULL;
+		}
+
+		for (j = 0; j < 256; j++) {
+			int section;
+
+			section = (i << 8) | j;
+			if (pattern[section % pattern_length]) {
+				snprintf(name, sizeof(name), "%.2x", j);
+
+				if (mkdirat(dirfd, name, 0777) < 0 &&
+				    errno != EEXIST) {
+					perror("mkdir");
+					err = 1;
+					return NULL;
+				}
+			}
+		}
+
+		close(dirfd);
+
+		pthread_mutex_lock(&lock);
+	}
+
+	pthread_mutex_unlock(&lock);
+
+	return NULL;
+}
 
 int init(int argc, char *argv[])
 {
-	int pattern_length;
-	uint8_t *pattern;
 	int i;
-	int chunkdir;
 
 	if (argc == 0) {
 		pattern_length = 1;
@@ -53,7 +119,7 @@ int init(int argc, char *argv[])
 				pattern[i] = 0;
 		}
 	} else {
-		return -1;
+		return 1;
 	}
 
 	if (mkdir("chunks", 0777) < 0 && errno != EEXIST) {
@@ -64,44 +130,19 @@ int init(int argc, char *argv[])
 	chunkdir = openat(AT_FDCWD, "chunks", O_DIRECTORY | O_PATH);
 	if (chunkdir < 0) {
 		perror("open");
-		return -1;
+		return 1;
 	}
 
-	for (i = 0; i < 256; i++) {
-		char name[16];
-		int dirfd;
-		int j;
+	pthread_mutex_init(&lock, NULL);
+	dir_index = 0;
+	err = 0;
 
-		snprintf(name, sizeof(name), "%.2x", i);
+	run_threads(mkdir_thread, NULL, 128);
 
-		if (mkdirat(chunkdir, name, 0777) < 0 && errno != EEXIST) {
-			perror("mkdir");
-			return 1;
-		}
+	pthread_mutex_destroy(&lock);
 
-		dirfd = openat(chunkdir, name, O_DIRECTORY | O_PATH);
-		if (dirfd < 0) {
-			perror("open");
-			return -1;
-		}
-
-		for (j = 0; j < 256; j++) {
-			int section;
-
-			section = (i << 8) | j;
-			if (pattern[section % pattern_length]) {
-				snprintf(name, sizeof(name), "%.2x", j);
-
-				if (mkdirat(dirfd, name, 0777) < 0 &&
-				    errno != EEXIST) {
-					perror("mkdir");
-					return 1;
-				}
-			}
-		}
-
-		close(dirfd);
-	}
+	if (err)
+		return 1;
 
 	close(chunkdir);
 
