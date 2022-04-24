@@ -39,7 +39,7 @@
 #include "reposet.h"
 #include "rw.h"
 
-#define MAX_DIRTY_CHUNKS	4096
+#define MAX_DIRTY_CHUNKS	512
 
 struct repomount_file_info {
 	int		fd;
