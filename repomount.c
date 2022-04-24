@@ -555,7 +555,7 @@ static int repomount_statfs(const char *path, struct statvfs *buf)
 {
 	struct iv_list_head *lh;
 
-	if (strcmp(path, "/")) {
+	if (path[0] != '/') {
 		fprintf(stderr, "statfs called with [%s]\n", path);
 		return -ENOENT;
 	}
