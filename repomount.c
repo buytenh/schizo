@@ -53,7 +53,6 @@ struct repomount_file_info {
 	struct iv_avl_tree	dirty_chunks;
 	uint64_t		num_dirty_chunks;
 	struct iv_list_head	lru;
-	struct timespec		last_write;
 
 	bool		wrote_empty_chunk;
 	uint8_t		empty_chunk_hash[];
@@ -178,7 +177,6 @@ static int repomount_open(const char *path, struct fuse_file_info *fi)
 	int writeable;
 	int fd;
 	struct image_info info;
-	struct stat buf;
 	struct repomount_file_info *fh;
 	int ret;
 
@@ -193,7 +191,7 @@ static int repomount_open(const char *path, struct fuse_file_info *fi)
 	if (fd < 0)
 		return fd;
 
-	ret = reposet_stat_image(&rs, fd, &info, &buf);
+	ret = reposet_stat_image(&rs, fd, &info, NULL);
 	if (ret < 0)
 		return ret;
 
@@ -214,7 +212,6 @@ static int repomount_open(const char *path, struct fuse_file_info *fi)
 	INIT_IV_AVL_TREE(&fh->dirty_chunks, compare_dirty_chunks);
 	fh->num_dirty_chunks = 0;
 	INIT_IV_LIST_HEAD(&fh->lru);
-	fh->last_write = buf.st_mtim;
 
 	fh->wrote_empty_chunk = false;
 
@@ -322,25 +319,6 @@ eio:
 	return processed ? processed : -EIO;
 }
 
-static int timespec_gt(const struct timespec *a, const struct timespec *b)
-{
-	if (a->tv_sec > b->tv_sec)
-		return 1;
-	if (a->tv_sec < b->tv_sec)
-		return 0;
-
-	if (a->tv_nsec > b->tv_nsec)
-		return 1;
-
-	return 0;
-}
-
-static void timespec_copy(struct timespec *to, const struct timespec *from)
-{
-	to->tv_sec = from->tv_sec;
-	to->tv_nsec = from->tv_nsec;
-}
-
 static void write_dirty_chunk(struct repomount_file_info *fh,
 			      struct dirty_chunk *c, uint8_t *hash)
 {
@@ -379,9 +357,6 @@ static void __flush_dirty_chunk(struct repomount_file_info *fh,
 	iv_avl_tree_delete(&fh->dirty_chunks, &c->an);
 	fh->num_dirty_chunks--;
 	iv_list_del(&c->list_lru);
-
-	if (timespec_gt(&c->last_write, &fh->last_write))
-		timespec_copy(&fh->last_write, &c->last_write);
 
 	free(c);
 }
