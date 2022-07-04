@@ -423,7 +423,7 @@ __get_dirty_chunk(struct repomount_file_info *fh, uint64_t chunk_index,
 	c = __find_dirty_chunk(fh, chunk_index);
 	if (c != NULL) {
 		iv_list_del(&c->list_lru);
-		iv_list_add(&c->list_lru, &fh->lru);
+		iv_list_add_tail(&c->list_lru, &fh->lru);
 		clock_gettime(CLOCK_REALTIME, &c->last_write);
 		return c;
 	}
