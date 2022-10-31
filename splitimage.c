@@ -262,8 +262,8 @@ static void build_tree_index(void)
 }
 
 static int fd;
-static struct timespec times[2];
 static uint32_t last_block_size;
+static struct timespec times[2];
 static pthread_mutex_t lock;
 static uint64_t i;
 static struct iv_avl_node *an;
@@ -341,37 +341,42 @@ int splitimage(int argc, char *argv[])
 	if (read_hashes(argv[2]))
 		return 1;
 
-	build_tree_hash();
-
-	scan_repos();
-
-	build_tree_index();
-
 	fd = open(argv[1], O_RDONLY);
 	if (fd < 0) {
 		perror("open");
+		free(hashes);
 		return 1;
 	}
 
 	if (fstat(fd, &buf) < 0) {
 		perror("fstat");
+		free(hashes);
+		close(fd);
 		return 1;
 	}
-
-	times[0].tv_sec = 0;
-	times[0].tv_nsec = UTIME_OMIT;
-	times[1].tv_sec = buf.st_mtim.tv_sec;
-	times[1].tv_nsec = buf.st_mtim.tv_nsec;
 
 	num_blocks = (buf.st_size + block_size - 1) / block_size;
 	if (num_blocks != num) {
 		fprintf(stderr, "image file has %" PRId64 " blocks "
 				"while map file has %" PRId64 "\n",
 			num_blocks, num);
+		free(hashes);
+		close(fd);
 		return 1;
 	}
 
 	last_block_size = buf.st_size - (num - 1) * block_size;
+
+	build_tree_hash();
+
+	scan_repos();
+
+	build_tree_index();
+
+	times[0].tv_sec = 0;
+	times[0].tv_nsec = UTIME_OMIT;
+	times[1].tv_sec = buf.st_mtim.tv_sec;
+	times[1].tv_nsec = buf.st_mtim.tv_nsec;
 
 	pthread_mutex_init(&lock, NULL);
 	i = 0;
@@ -381,10 +386,12 @@ int splitimage(int argc, char *argv[])
 	run_threads(split_thread, NULL, 128);
 	printf("\n");
 
-	close(fd);
-
 	if (!errors_seen)
 		reposet_write_image(&rs, argv[0], hashes, num, times);
+
+	free(hashes);
+
+	close(fd);
 
 	return 0;
 }
