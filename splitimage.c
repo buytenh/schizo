@@ -252,7 +252,7 @@ static void build_tree_index(void)
 	}
 }
 
-static int fd;
+static int fd_imgfile;
 static uint32_t last_block_size;
 static struct timespec times[2];
 static pthread_mutex_t lock;
@@ -266,7 +266,7 @@ write_chunk(const uint8_t *expected_hash, uint64_t off, int datalen)
 	uint8_t data[block_size];
 	uint8_t hash[hash_size];
 
-	if (xpread(fd, data, datalen, off) != datalen)
+	if (xpread(fd_imgfile, data, datalen, off) != datalen)
 		return 1;
 
 	gcry_md_hash_buffer(hash_algo, hash, data, datalen);
@@ -343,17 +343,17 @@ int splitimage(int argc, char *argv[])
 
 	close(fd_mapfile);
 
-	fd = open(argv[1], O_RDONLY);
-	if (fd < 0) {
+	fd_imgfile = open(argv[1], O_RDONLY);
+	if (fd_imgfile < 0) {
 		perror("open");
 		free(hashes);
 		return 1;
 	}
 
-	if (fstat(fd, &buf) < 0) {
+	if (fstat(fd_imgfile, &buf) < 0) {
 		perror("fstat");
 		free(hashes);
-		close(fd);
+		close(fd_imgfile);
 		return 1;
 	}
 
@@ -363,7 +363,7 @@ int splitimage(int argc, char *argv[])
 				"while map file has %" PRId64 "\n",
 			num_blocks, num);
 		free(hashes);
-		close(fd);
+		close(fd_imgfile);
 		return 1;
 	}
 
@@ -393,7 +393,7 @@ int splitimage(int argc, char *argv[])
 
 	free(hashes);
 
-	close(fd);
+	close(fd_imgfile);
 
 	return 0;
 }
