@@ -260,20 +260,22 @@ static uint64_t i;
 static struct iv_avl_node *an;
 static int errors_seen;
 
-static int
-write_chunk(const uint8_t *expected_hash, uint64_t off, int datalen)
+static int write_chunk(uint64_t index, int datalen)
 {
+	const uint8_t *hash;
 	uint8_t data[block_size];
-	uint8_t hash[hash_size];
+	uint8_t computed_hash[hash_size];
 
-	if (xpread(fd_imgfile, data, datalen, off) != datalen)
+	hash = hashes + index * hash_size;
+
+	if (xpread(fd_imgfile, data, datalen, index * block_size) != datalen)
 		return 1;
 
-	gcry_md_hash_buffer(hash_algo, hash, data, datalen);
+	gcry_md_hash_buffer(hash_algo, computed_hash, data, datalen);
 
-	if (memcmp(expected_hash, hash, hash_size)) {
+	if (memcmp(hash, computed_hash, hash_size)) {
 		fprintf(stderr, "write_chunk: hash mismatch "
-				"at offset %jd\n", (intmax_t)off);
+				"for chunk %jd\n", (intmax_t)index);
 		return 1;
 	}
 
@@ -304,8 +306,7 @@ static void *split_thread(void *_dummy)
 		else
 			this_block_size = block_size;
 
-		err |= write_chunk(hashes + c->index * hash_size,
-				   c->index * block_size, this_block_size);
+		err |= write_chunk(c->index, this_block_size);
 
 		pthread_mutex_lock(&lock);
 
