@@ -322,6 +322,37 @@ static void *write_thread(void *_dummy)
 	return NULL;
 }
 
+static int cp_splitimage(const char *image, const struct timespec *mtime)
+{
+	build_tree_hash();
+
+	scan_repos();
+
+	build_tree_index();
+
+	times[0].tv_sec = 0;
+	times[0].tv_nsec = UTIME_OMIT;
+	times[1].tv_sec = mtime->tv_sec;
+	times[1].tv_nsec = mtime->tv_nsec;
+
+	pthread_mutex_init(&lock, NULL);
+	i = 0;
+	an = iv_avl_tree_min(&chunks_index);
+	errors_seen = 0;
+
+	run_threads(write_thread, NULL, 128);
+	printf("\n");
+
+	if (!errors_seen)
+		reposet_write_image(&rs, image, hashes, num, times);
+
+	free(hashes);
+
+	close(fd_imgfile);
+
+	return 0;
+}
+
 int splitimage(int argc, char *argv[])
 {
 	int fd_mapfile;
@@ -370,31 +401,5 @@ int splitimage(int argc, char *argv[])
 
 	last_block_size = buf.st_size - (num - 1) * block_size;
 
-	build_tree_hash();
-
-	scan_repos();
-
-	build_tree_index();
-
-	times[0].tv_sec = 0;
-	times[0].tv_nsec = UTIME_OMIT;
-	times[1].tv_sec = buf.st_mtim.tv_sec;
-	times[1].tv_nsec = buf.st_mtim.tv_nsec;
-
-	pthread_mutex_init(&lock, NULL);
-	i = 0;
-	an = iv_avl_tree_min(&chunks_index);
-	errors_seen = 0;
-
-	run_threads(write_thread, NULL, 128);
-	printf("\n");
-
-	if (!errors_seen)
-		reposet_write_image(&rs, argv[0], hashes, num, times);
-
-	free(hashes);
-
-	close(fd_imgfile);
-
-	return 0;
+	return cp_splitimage(argv[0], &buf.st_mtim);
 }
