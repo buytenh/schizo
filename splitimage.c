@@ -48,16 +48,9 @@ struct scan_thread_state {
 	uint64_t	num_removed;
 };
 
-static int read_hashes(const char *mapfile)
+static int read_hashes(int fd)
 {
-	int fd;
 	int64_t hashes_len;
-
-	fd = open(mapfile, O_RDONLY);
-	if (fd < 0) {
-		perror("open");
-		return 1;
-	}
 
 	hashes_len = lseek(fd, 0, SEEK_END);
 	if (hashes_len == (off_t)-1) {
@@ -79,8 +72,6 @@ static int read_hashes(const char *mapfile)
 
 	if (xpread(fd, hashes, hashes_len, 0) != hashes_len)
 		return 1;
-
-	close(fd);
 
 	num = hashes_len / hash_size;
 
@@ -332,14 +323,25 @@ static void *split_thread(void *_dummy)
 
 int splitimage(int argc, char *argv[])
 {
+	int fd_mapfile;
 	struct stat buf;
 	uint64_t num_blocks;
 
 	if (argc != 3)
 		return -1;
 
-	if (read_hashes(argv[2]))
+	fd_mapfile = open(argv[2], O_RDONLY);
+	if (fd_mapfile < 0) {
+		perror("open");
 		return 1;
+	}
+
+	if (read_hashes(fd_mapfile)) {
+		close(fd_mapfile);
+		return 1;
+	}
+
+	close(fd_mapfile);
 
 	fd = open(argv[1], O_RDONLY);
 	if (fd < 0) {
