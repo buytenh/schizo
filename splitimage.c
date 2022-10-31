@@ -44,7 +44,7 @@ static struct iv_avl_tree chunks_hash[65536];
 static uint64_t num_removed;
 static struct iv_avl_tree chunks_index;
 
-struct splitimage_thread_state {
+struct scan_thread_state {
 	uint64_t	num_removed;
 };
 
@@ -154,9 +154,9 @@ static void build_tree_hash(void)
 	}
 }
 
-static void splitimage_thread_init(void *_sts)
+static void scan_thread_init(void *_sts)
 {
-	struct splitimage_thread_state *sts = _sts;
+	struct scan_thread_state *sts = _sts;
 
 	sts->num_removed = 0;
 }
@@ -169,7 +169,7 @@ static void got_section(void *_sts, int section)
 static void got_chunk(void *_sts, int section, const char *dir, int dirfd,
 		      const char *name, const uint8_t *hash)
 {
-	struct splitimage_thread_state *sts = _sts;
+	struct scan_thread_state *sts = _sts;
 	struct chunk *c;
 
 	c = find_chunk(&chunks_hash[section], hash);
@@ -181,9 +181,9 @@ static void got_chunk(void *_sts, int section, const char *dir, int dirfd,
 	}
 }
 
-static void splitimage_thread_deinit(void *_sts)
+static void scan_thread_deinit(void *_sts)
 {
-	struct splitimage_thread_state *sts = _sts;
+	struct scan_thread_state *sts = _sts;
 
 	num_removed += sts->num_removed;
 }
@@ -212,9 +212,9 @@ static void scan_repos(void)
 		r = iv_container_of(lh, struct repo, list);
 
 		enumerate_chunks(r, hash_size,
-				 sizeof(struct splitimage_thread_state),
-				 128, splitimage_thread_init, got_section,
-				 got_chunk, splitimage_thread_deinit);
+				 sizeof(struct scan_thread_state),
+				 128, scan_thread_init, got_section,
+				 got_chunk, scan_thread_deinit);
 	}
 
 	for (i = 0; i < 65536; i++) {
