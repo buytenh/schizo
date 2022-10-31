@@ -24,6 +24,7 @@
 #include "reposet.h"
 #include "schizo.h"
 
+int cp(int argc, char *argv[]);
 int fsck(int argc, char *argv[]);
 int gc(int argc, char *argv[]);
 int init(int argc, char *argv[]);
@@ -36,9 +37,11 @@ int hash_size;
 int thread_limit;
 
 struct reposet rs;
+struct reposet rs_src;
 
 enum {
 	TOOL_UNKNOWN = 0,
+	TOOL_CP,
 	TOOL_FSCK,
 	TOOL_GC,
 	TOOL_INIT,
@@ -63,31 +66,35 @@ static void usage(const char *argv0)
 	fprintf(stderr, "usage: %s [opts]\n", argv0);
 	fprintf(stderr, "\n");
 	fprintf(stderr, " available tools:\n");
-	fprintf(stderr, "     --fsck               run fsck\n");
-	fprintf(stderr, "     --gc                 run gc\n");
-	fprintf(stderr, "     --init               run init\n");
-	fprintf(stderr, "     --scrub              run scrub\n");
-	fprintf(stderr, "     --splitimage         run splitimage\n");
+	fprintf(stderr, "     --cp                   run cp\n");
+	fprintf(stderr, "     --fsck                 run fsck\n");
+	fprintf(stderr, "     --gc                   run gc\n");
+	fprintf(stderr, "     --init                 run init\n");
+	fprintf(stderr, "     --scrub                run scrub\n");
+	fprintf(stderr, "     --splitimage           run splitimage\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, " global options:\n");
-	fprintf(stderr, "  -b, --block-size=SIZE   hash block size\n");
-	fprintf(stderr, "  -h, --hash-algo=ALGO    hash algorithm\n");
-	fprintf(stderr, "  -r, --repository=DIR    repository\n");
-	fprintf(stderr, "  -t, --thread-limit=LIM  worker thread limit\n");
+	fprintf(stderr, "  -b, --block-size=SIZE     hash block size\n");
+	fprintf(stderr, "  -h, --hash-algo=ALGO      hash algorithm\n");
+	fprintf(stderr, "  -r, --repository=DIR      repository\n");
+	fprintf(stderr, "  -s, --src-repository=DIR  source repository (cp)\n");
+	fprintf(stderr, "  -t, --thread-limit=LIM    worker thread limit\n");
 }
 
 int main(int argc, char *argv[])
 {
 	static struct option long_options[] = {
 		{ "block-size", required_argument, 0, 'b' },
+		{ "cp", no_argument, 0, 'c' },
 		{ "fsck", no_argument, 0, 'f' },
 		{ "gc", no_argument, 0, 'g' },
 		{ "hash-algo", required_argument, 0, 'h' },
 		{ "hash-algorithm", required_argument, 0, 'h' },
 		{ "init", no_argument, 0, 'i' },
 		{ "repository", required_argument, 0, 'r' },
-		{ "scrub", no_argument, 0, 's' },
+		{ "scrub", no_argument, 0, 'k' },
 		{ "splitimage", no_argument, 0, 'S' },
+		{ "src-repository", required_argument, 0, 's' },
 		{ "thread-limit", required_argument, 0, 't' },
 		{ 0, 0, 0, 0 },
 	};
@@ -99,11 +106,12 @@ int main(int argc, char *argv[])
 	}
 
 	reposet_init(&rs);
+	reposet_init(&rs_src);
 
 	while (1) {
 		int c;
 
-		c = getopt_long(argc, argv, "b:h:r:t:", long_options, NULL);
+		c = getopt_long(argc, argv, "b:h:r:s:t:", long_options, NULL);
 		if (c == -1)
 			break;
 
@@ -114,6 +122,10 @@ int main(int argc, char *argv[])
 						"%s\n", optarg);
 				return 1;
 			}
+			break;
+
+		case 'c':
+			set_tool(TOOL_CP);
 			break;
 
 		case 'f':
@@ -137,6 +149,10 @@ int main(int argc, char *argv[])
 			set_tool(TOOL_INIT);
 			break;
 
+		case 'k':
+			set_tool(TOOL_SCRUB);
+			break;
+
 		case 'r':
 			if (reposet_add_repo(&rs, optarg) < 0) {
 				fprintf(stderr, "can't add repo %s\n", optarg);
@@ -144,12 +160,16 @@ int main(int argc, char *argv[])
 			}
 			break;
 
-		case 's':
-			set_tool(TOOL_SCRUB);
-			break;
-
 		case 'S':
 			set_tool(TOOL_SPLITIMAGE);
+			break;
+
+		case 's':
+			if (reposet_add_repo(&rs_src, optarg) < 0) {
+				fprintf(stderr, "can't add src repo %s\n",
+					optarg);
+				return 1;
+			}
 			break;
 
 		case 't':
@@ -180,18 +200,27 @@ int main(int argc, char *argv[])
 
 	hash_size = gcry_md_get_algo_dlen(hash_algo);
 	reposet_set_hash_size(&rs, hash_size);
+	reposet_set_hash_size(&rs_src, hash_size);
 
 	ret = -1;
 
-	if (tool == TOOL_FSCK || tool == TOOL_GC || tool == TOOL_SCRUB ||
-	    tool == TOOL_SPLITIMAGE) {
+	if (tool == TOOL_CP || tool == TOOL_FSCK || tool == TOOL_GC ||
+	    tool == TOOL_SCRUB || tool == TOOL_SPLITIMAGE) {
 		if (iv_list_empty(&rs.repos)) {
 			fprintf(stderr, "missing repositories\n");
 			return 1;
 		}
 	}
 
+	if (tool == TOOL_CP && iv_list_empty(&rs_src.repos)) {
+		fprintf(stderr, "missing src repositories\n");
+		return 1;
+	}
+
 	switch (tool) {
+	case TOOL_CP:
+		ret = cp(argc - optind, argv + optind);
+		break;
 	case TOOL_FSCK:
 		ret = fsck(argc - optind, argv + optind);
 		break;

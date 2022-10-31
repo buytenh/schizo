@@ -28,6 +28,7 @@ extern int hash_size;
 extern int thread_limit;
 
 extern struct reposet rs;
+extern struct reposet rs_src;
 
 
 #endif

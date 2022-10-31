@@ -268,8 +268,29 @@ static int write_chunk(uint64_t index, int datalen)
 
 	hash = hashes + index * hash_size;
 
-	if (xpread(fd_imgfile, data, datalen, index * block_size) != datalen)
-		return 1;
+	if (fd_imgfile == -1) {
+		int fd_chunk;
+
+		fd_chunk = reposet_open_chunk(&rs_src, hash);
+		if (fd_chunk < 0) {
+			fprintf(stderr, "write_chunk: can't open chunk %jd\n",
+				(intmax_t)index);
+			return 1;
+		}
+
+		if (xpread(fd_chunk, data, datalen, 0) != datalen) {
+			close(fd_chunk);
+			return 1;
+		}
+
+		close(fd_chunk);
+	} else {
+		ssize_t ret;
+
+		ret = xpread(fd_imgfile, data, datalen, index * block_size);
+		if (ret != datalen)
+			return 1;
+	}
 
 	gcry_md_hash_buffer(hash_algo, computed_hash, data, datalen);
 
@@ -348,9 +369,54 @@ static int cp_splitimage(const char *image, const struct timespec *mtime)
 
 	free(hashes);
 
-	close(fd_imgfile);
+	if (fd_imgfile != -1)
+		close(fd_imgfile);
 
 	return 0;
+}
+
+int cp(int argc, char *argv[])
+{
+	int fd_mapfile;
+	struct image_info info;
+	struct stat buf;
+
+	if (argc != 1)
+		return -1;
+
+	fd_mapfile = reposet_open_image(&rs_src, argv[0], O_RDONLY);
+	if (fd_mapfile < 0) {
+		perror("open");
+		return 1;
+	}
+
+	if (reposet_stat_image(&rs_src, fd_mapfile, &info, &buf) < 0) {
+		perror("fstat");
+		close(fd_mapfile);
+		return 1;
+	}
+
+	if (info.size_firstchunk != block_size) {
+		fprintf(stderr, "image has block size %jd while "
+				"configured block size is %jd\n",
+			(intmax_t)info.size_firstchunk, (intmax_t)block_size);
+		close(fd_mapfile);
+		return 1;
+	}
+
+	if (read_hashes(fd_mapfile)) {
+		close(fd_mapfile);
+		return 1;
+	}
+
+	close(fd_mapfile);
+
+	fd_imgfile = -1;
+
+	last_block_size = info.size -
+				(info.numchunks - 1) * info.size_firstchunk;
+
+	return cp_splitimage(argv[0], &buf.st_mtim);
 }
 
 int splitimage(int argc, char *argv[])
