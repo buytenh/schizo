@@ -285,7 +285,7 @@ static int write_chunk(uint64_t index, int datalen)
 	return 0;
 }
 
-static void *split_thread(void *_dummy)
+static void *write_thread(void *_dummy)
 {
 	int err;
 
@@ -386,7 +386,7 @@ int splitimage(int argc, char *argv[])
 	an = iv_avl_tree_min(&chunks_index);
 	errors_seen = 0;
 
-	run_threads(split_thread, NULL, 128);
+	run_threads(write_thread, NULL, 128);
 	printf("\n");
 
 	if (!errors_seen)
