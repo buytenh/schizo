@@ -947,7 +947,8 @@ static int repomount_fallocate(const char *path, int mode, off_t offset,
 {
 	struct repomount_file_info *fh = (void *)fi->fh;
 
-	if (!(mode & FALLOC_FL_PUNCH_HOLE))
+	if (!(mode & FALLOC_FL_PUNCH_HOLE) &&
+	    !(mode & FALLOC_FL_ZERO_RANGE))
 		return -EINVAL;
 
 	if (!fh->writeable)
