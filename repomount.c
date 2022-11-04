@@ -1,6 +1,6 @@
 /*
  * schizo, a set of tools for managing split disk images
- * Copyright (C) 2020 Lennert Buytenhek
+ * Copyright (C) 2020, 2022 Lennert Buytenhek
  *
  * This library is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License version
@@ -59,14 +59,30 @@ struct repomount_file_info {
 };
 
 struct chunk {
+	/* Under file lock.  */
 	struct iv_avl_node	an;
+	struct iv_list_head	list_lru;
+
+	/* Immutable after creation.  */
 	uint64_t		chunk_index;
 	uint32_t		length;
 
-	struct iv_list_head	list_lru;
-
+	/* Locally protected state.  */
+	pthread_mutex_t		lock;
+	int			state;
+	int			num_waiters;
+	pthread_cond_t		state_io_complete;
 	struct timespec		last_write;
+
 	uint8_t			buf[];
+};
+
+enum {
+	STATE_READING = 1,
+	STATE_READ_ERROR,
+	STATE_CLEAN,
+	STATE_DIRTY,
+	STATE_WRITEOUT,
 };
 
 GCRY_THREAD_OPTION_PTHREAD_IMPL;
@@ -277,30 +293,65 @@ static void write_chunk(struct repomount_file_info *fh, struct chunk *c)
 	}
 }
 
-static void __flush_chunk(struct repomount_file_info *fh, struct chunk *c)
+static bool __check_evict_chunks(struct repomount_file_info *fh)
 {
-	write_chunk(fh, c);
+	bool fh_lock_dropped;
+	struct iv_list_head *lh;
+	struct iv_list_head *lh2;
 
-	iv_avl_tree_delete(&fh->chunks, &c->an);
-	fh->num_chunks--;
-	iv_list_del(&c->list_lru);
+	fh_lock_dropped = false;
 
-	free(c);
-}
-
-static int __flush_one_chunk(struct repomount_file_info *fh)
-{
-	if (!iv_list_empty(&fh->lru)) {
+again:
+	iv_list_for_each_safe (lh, lh2, &fh->lru) {
 		struct chunk *c;
 
-		c = iv_container_of(fh->lru.next, struct chunk,
-				    list_lru);
-		__flush_chunk(fh, c);
+		if (fh->num_chunks < MAX_CHUNKS)
+			break;
 
-		return 1;
+		c = iv_container_of(lh, struct chunk, list_lru);
+
+		pthread_mutex_lock(&c->lock);
+
+		if (c->state == STATE_DIRTY) {
+			fh_lock_dropped = true;
+
+			pthread_mutex_unlock(&fh->lock);
+
+			c->state = STATE_WRITEOUT;
+			pthread_mutex_unlock(&c->lock);
+
+			write_chunk(fh, c);
+
+			pthread_mutex_lock(&c->lock);
+			c->state = STATE_CLEAN;
+			if (c->num_waiters)
+				pthread_cond_broadcast(&c->state_io_complete);
+			pthread_mutex_unlock(&c->lock);
+
+			pthread_mutex_lock(&fh->lock);
+			goto again;
+		}
+
+		if ((c->state == STATE_READ_ERROR ||
+		     c->state == STATE_CLEAN) && c->num_waiters == 0) {
+			iv_avl_tree_delete(&fh->chunks, &c->an);
+			pthread_mutex_unlock(&c->lock);
+			pthread_mutex_destroy(&c->lock);
+			fh->num_chunks--;
+			iv_list_del(&c->list_lru);
+
+			free(c);
+		} else {
+			pthread_mutex_unlock(&c->lock);
+		}
 	}
 
-	return 0;
+	if (fh->num_chunks >= MAX_CHUNKS) {
+		fprintf(stderr, "__check_evict_chunks: not enough "
+				"chunks freed!\n");
+	}
+
+	return fh_lock_dropped;
 }
 
 static uint32_t
@@ -315,62 +366,108 @@ compute_chunk_size(struct repomount_file_info *fh, uint64_t chunk_index)
 	return chunk_size;
 }
 
-static struct chunk *
-__get_chunk(struct repomount_file_info *fh, uint64_t chunk_index,
-	    int read_backing_data)
+static int __read_chunk(struct repomount_file_info *fh, struct chunk *c)
+{
+	uint8_t hash[hash_size];
+	int ret;
+
+	ret = xpread(fh->fd, hash, hash_size, c->chunk_index * hash_size);
+	if (ret != hash_size)
+		return -1;
+
+	if (reposet_read_chunk(&rs, hash, c->buf, c->length) < 0)
+		return -1;
+
+	if (c->length < fh->size_firstchunk) {
+		memset(c->buf + c->length, 0,
+		       fh->size_firstchunk - c->length);
+	}
+
+	return 0;
+}
+
+static struct chunk *__create_chunk(struct repomount_file_info *fh,
+				    uint64_t chunk_index, bool must_read_data)
 {
 	struct chunk *c;
-	uint32_t chunk_size;
-
-	c = __find_chunk(fh, chunk_index);
-	if (c != NULL) {
-		iv_list_del(&c->list_lru);
-		iv_list_add_tail(&c->list_lru, &fh->lru);
-		clock_gettime(CLOCK_REALTIME, &c->last_write);
-		return c;
-	}
-
-	while (fh->num_chunks >= MAX_CHUNKS) {
-		if (!__flush_one_chunk(fh))
-			break;
-	}
+	int ret;
 
 	c = malloc(sizeof(*c) + fh->size_firstchunk);
-	if (c == NULL)
+	if (c == NULL) {
+		fprintf(stderr, "__create_chunk: out of memory\n");
+		pthread_mutex_unlock(&fh->lock);
 		return NULL;
-
-	chunk_size = compute_chunk_size(fh, chunk_index);
-
-	if (read_backing_data) {
-		uint8_t hash[hash_size];
-		int ret;
-
-		ret = xpread(fh->fd, hash, hash_size, chunk_index * hash_size);
-		if (ret != hash_size) {
-			free(c);
-			return NULL;
-		}
-
-		if (reposet_read_chunk(&rs, hash, c->buf, chunk_size) < 0) {
-			free(c);
-			return NULL;
-		}
-
-		if (chunk_size < fh->size_firstchunk) {
-			memset(c->buf + chunk_size, 0,
-			       fh->size_firstchunk - chunk_size);
-		}
-	} else {
-		memset(c->buf, 0, fh->size_firstchunk);
 	}
 
 	c->chunk_index = chunk_index;
-	c->length = chunk_size;
-	iv_list_add(&c->list_lru, &fh->lru);
-	clock_gettime(CLOCK_REALTIME, &c->last_write);
+	c->length = compute_chunk_size(fh, chunk_index);
 
-	iv_avl_tree_insert(&fh->chunks, &c->an);
+	pthread_mutex_init(&c->lock, NULL);
+	c->num_waiters = 0;
+	pthread_cond_init(&c->state_io_complete, NULL);
+	c->last_write = (struct timespec) { 0, 0, };
+
+	if (iv_avl_tree_insert(&fh->chunks, &c->an) < 0) {
+		fprintf(stderr, "%d: chunk %" PRId64 " already exists\n",
+			gettid(), chunk_index);
+		abort();
+	}
 	fh->num_chunks++;
+	iv_list_add_tail(&c->list_lru, &fh->lru);
+
+	if (must_read_data) {
+		c->state = STATE_READING;
+		pthread_mutex_unlock(&fh->lock);
+
+		ret = __read_chunk(fh, c);
+
+		pthread_mutex_lock(&c->lock);
+
+		if (ret < 0)
+			c->state = STATE_READ_ERROR;
+		else
+			c->state = STATE_CLEAN;
+
+		if (c->num_waiters)
+			pthread_cond_broadcast(&c->state_io_complete);
+	} else {
+		pthread_mutex_lock(&c->lock);
+		c->state = STATE_DIRTY;
+		memset(c->buf, 0, c->length);
+
+		pthread_mutex_unlock(&fh->lock);
+	}
+
+	return c;
+}
+
+static struct chunk *
+__get_locked_chunk_wait_readable(struct repomount_file_info *fh,
+				 uint64_t chunk_index, bool must_read_data)
+{
+	struct chunk *c;
+
+again:
+	c = __find_chunk(fh, chunk_index);
+
+	if (c != NULL) {
+		iv_list_del(&c->list_lru);
+		iv_list_add_tail(&c->list_lru, &fh->lru);
+
+		pthread_mutex_lock(&c->lock);
+		pthread_mutex_unlock(&fh->lock);
+
+		while (c->state == STATE_READING) {
+			c->num_waiters++;
+			pthread_cond_wait(&c->state_io_complete, &c->lock);
+			c->num_waiters--;
+		}
+	} else {
+		if (__check_evict_chunks(fh))
+			goto again;
+
+		c = __create_chunk(fh, chunk_index, must_read_data);
+	}
 
 	return c;
 }
@@ -391,59 +488,55 @@ static int repomount_read(const char *path, char *buf, size_t size,
 	if (offset + size > fh->size)
 		size = fh->size - offset;
 
-	pthread_mutex_lock(&fh->lock);
-
 	processed = 0;
 	while (size) {
 		uint64_t chunk_index;
 		uint32_t chunk_offset;
-		size_t chunk_toread;
+		size_t toread;
 		struct chunk *c;
 
 		chunk_index = offset / fh->size_firstchunk;
 		chunk_offset = offset % fh->size_firstchunk;
 
-		chunk_toread = fh->size_firstchunk - chunk_offset;
-		if (chunk_toread > size)
-			chunk_toread = size;
+		toread = fh->size_firstchunk - chunk_offset;
+		if (toread > size)
+			toread = size;
 
-		c = __find_chunk(fh, chunk_index);
-		if (c == NULL) {
-			uint8_t hash[hash_size];
-			uint32_t chunk_size;
-			uint8_t data[fh->size_firstchunk];
+		pthread_mutex_lock(&fh->lock);
 
-			pthread_mutex_unlock(&fh->lock);
+		c = __get_locked_chunk_wait_readable(fh, chunk_index, true);
+		if (c == NULL)
+			goto eio;
 
-			if (xpread(fh->fd, hash, hash_size,
-				   chunk_index * hash_size) != hash_size)
-				goto eio;
-
-			chunk_size = compute_chunk_size(fh, chunk_index);
-
-			if (reposet_read_chunk(&rs, hash, data, chunk_size) < 0)
-				goto eio;
-
-			memcpy(buf, data + chunk_offset, chunk_toread);
-
-			pthread_mutex_lock(&fh->lock);
-		} else {
-			memcpy(buf, c->buf + chunk_offset, chunk_toread);
+		if (c->state == STATE_READ_ERROR) {
+			pthread_mutex_unlock(&c->lock);
+			goto eio;
 		}
 
-		buf += chunk_toread;
-		size -= chunk_toread;
-		offset += chunk_toread;
+		memcpy(buf, c->buf + chunk_offset, toread);
 
-		processed += chunk_toread;
+		pthread_mutex_unlock(&c->lock);
+
+		buf += toread;
+		size -= toread;
+		offset += toread;
+
+		processed += toread;
 	}
-
-	pthread_mutex_unlock(&fh->lock);
 
 	return processed;
 
 eio:
 	return processed ? processed : -EIO;
+}
+
+static void __wait_writeout_done(struct chunk *c)
+{
+	while (c->state == STATE_WRITEOUT) {
+		c->num_waiters++;
+		pthread_cond_wait(&c->state_io_complete, &c->lock);
+		c->num_waiters--;
+	}
 }
 
 static int repomount_write(const char *path, const char *buf, size_t size,
@@ -465,15 +558,14 @@ static int repomount_write(const char *path, const char *buf, size_t size,
 	if (offset + size > fh->size)
 		size = fh->size - offset;
 
-	pthread_mutex_lock(&fh->lock);
-
 	processed = 0;
 	while (size) {
 		uint64_t chunk_index;
 		uint32_t chunk_offset;
 		uint32_t chunk_size;
+		bool must_read_data;
 		struct chunk *c;
-		size_t chunk_towrite;
+		size_t towrite;
 
 		chunk_index = offset / fh->size_firstchunk;
 		chunk_offset = offset % fh->size_firstchunk;
@@ -481,33 +573,47 @@ static int repomount_write(const char *path, const char *buf, size_t size,
 		chunk_size = compute_chunk_size(fh, chunk_index);
 
 		if (chunk_offset != 0 || size < chunk_size)
-			c = __get_chunk(fh, chunk_index, 1);
+			must_read_data = true;
 		else
-			c = __get_chunk(fh, chunk_index, 0);
+			must_read_data = false;
 
+		pthread_mutex_lock(&fh->lock);
+
+		c = __get_locked_chunk_wait_readable(fh, chunk_index,
+						     must_read_data);
 		if (c == NULL)
 			goto eio;
 
-		chunk_towrite = chunk_size - chunk_offset;
-		if (chunk_towrite > size)
-			chunk_towrite = size;
+		if (c->state == STATE_READ_ERROR) {
+			pthread_mutex_unlock(&c->lock);
+			goto eio;
+		}
 
-		memcpy(c->buf + chunk_offset, buf, chunk_towrite);
+		__wait_writeout_done(c);
 
-		buf += chunk_towrite;
-		size -= chunk_towrite;
-		offset += chunk_towrite;
+		towrite = c->length - chunk_offset;
+		if (towrite > size)
+			towrite = size;
 
-		processed += chunk_towrite;
+		if (c->state == STATE_DIRTY) {
+			memcpy(c->buf + chunk_offset, buf, towrite);
+		} else if (memcmp(c->buf + chunk_offset, buf, towrite)) {
+			c->state = STATE_DIRTY;
+			memcpy(c->buf + chunk_offset, buf, towrite);
+		}
+
+		pthread_mutex_unlock(&c->lock);
+
+		buf += towrite;
+		size -= towrite;
+		offset += towrite;
+
+		processed += towrite;
 	}
-
-	pthread_mutex_unlock(&fh->lock);
 
 	return processed;
 
 eio:
-	pthread_mutex_unlock(&fh->lock);
-
 	return processed ? processed : -EIO;
 }
 
@@ -536,44 +642,57 @@ static int repomount_statfs(const char *path, struct statvfs *buf)
 	return -EIO;
 }
 
-static void flush_file(struct repomount_file_info *fh)
-{
-	int chunks;
-	struct iv_avl_node *an;
-
-	pthread_mutex_lock(&fh->lock);
-
-	chunks = 0;
-	iv_avl_tree_for_each (an, &fh->chunks)
-		chunks++;
-
-	if (chunks) {
-		int i;
-
-		i = 0;
-		while (!iv_avl_tree_empty(&fh->chunks)) {
-			struct chunk *c;
-
-			fprintf(stderr, "\rfd %d: flushing chunk %d/%d",
-				fh->fd, ++i, chunks);
-
-			an = iv_avl_tree_min(&fh->chunks);
-
-			c = iv_container_of(an, struct chunk, an);
-			__flush_chunk(fh, c);
-		}
-
-		fprintf(stderr, "\n");
-	}
-
-	pthread_mutex_unlock(&fh->lock);
-}
-
 static int repomount_release(const char *path, struct fuse_file_info *fi)
 {
 	struct repomount_file_info *fh = (void *)fi->fh;
+	struct iv_avl_node *an;
+	struct iv_avl_node *an2;
 
-	flush_file(fh);
+again:
+	iv_avl_tree_for_each_safe (an, an2, &fh->chunks) {
+		struct chunk *c;
+
+		c = iv_container_of(an, struct chunk, an);
+
+		if (c->state == STATE_DIRTY) {
+			write_chunk(fh, c);
+			c->state = STATE_CLEAN;
+		}
+
+		if (c->state == STATE_READ_ERROR || c->state == STATE_CLEAN) {
+			iv_avl_tree_delete(&fh->chunks, &c->an);
+			pthread_mutex_destroy(&c->lock);
+			free(c);
+		} else {
+			fprintf(stderr, "repomount_release: found chunk %p "
+					"in state %d\n", c, c->state);
+		}
+	}
+
+	if (!iv_avl_tree_empty(&fh->chunks)) {
+		fprintf(stderr, "repomount_release: waiting for busy "
+				"chunks to finish I/O\n");
+
+		iv_avl_tree_for_each (an, &fh->chunks) {
+			struct chunk *c;
+
+			c = iv_container_of(an, struct chunk, an);
+
+			while (c->state == STATE_READING ||
+			       c->state == STATE_WRITEOUT) {
+				fprintf(stderr, "repomount_release: waiting "
+						"for chunk %p in state %d\n",
+					c, c->state);
+
+				c->num_waiters++;
+				pthread_cond_wait(&c->state_io_complete,
+						  &c->lock);
+				c->num_waiters--;
+			}
+		}
+
+		goto again;
+	}
 
 	close(fh->fd);
 	free(fh);
@@ -585,8 +704,28 @@ static int repomount_fsync(const char *path, int datasync,
 			   struct fuse_file_info *fi)
 {
 	struct repomount_file_info *fh = (void *)fi->fh;
+	struct iv_avl_node *an;
 
-	flush_file(fh);
+	pthread_mutex_lock(&fh->lock);
+
+	iv_avl_tree_for_each (an, &fh->chunks) {
+		struct chunk *c;
+
+		c = iv_container_of(an, struct chunk, an);
+
+		pthread_mutex_lock(&c->lock);
+
+		if (c->state == STATE_DIRTY) {
+			write_chunk(fh, c);
+			c->state = STATE_CLEAN;
+		} else if (c->state == STATE_WRITEOUT) {
+			__wait_writeout_done(c);
+		}
+
+		pthread_mutex_unlock(&c->lock);
+	}
+
+	pthread_mutex_unlock(&fh->lock);
 
 	return 0;
 }
