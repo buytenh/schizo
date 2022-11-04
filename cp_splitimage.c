@@ -25,6 +25,7 @@
 #include <iv_list.h>
 #include <limits.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <string.h>
 #include "enumerate_chunks.h"
 #include "rw.h"
@@ -42,7 +43,7 @@ static uint64_t num_duplicate;
 static int section_used[65536];
 static struct iv_avl_tree chunks_hash[65536];
 static uint64_t num_removed;
-static struct iv_avl_tree chunks_index;
+static struct iv_avl_tree chunks_write;
 
 struct scan_thread_state {
 	uint64_t	num_removed;
@@ -230,25 +231,28 @@ static int compare_chunks_index(const struct iv_avl_node *_a,
 	return 0;
 }
 
-static void insert_tree_index(struct iv_avl_node *an)
+static void insert_tree_write(struct iv_avl_node *an)
 {
 	if (an->left != NULL)
-		insert_tree_index(an->left);
+		insert_tree_write(an->left);
 	if (an->right != NULL)
-		insert_tree_index(an->right);
+		insert_tree_write(an->right);
 
-	iv_avl_tree_insert(&chunks_index, an);
+	iv_avl_tree_insert(&chunks_write, an);
 }
 
-static void build_tree_index(void)
+static void build_tree_write(bool by_hash)
 {
 	int i;
 
-	INIT_IV_AVL_TREE(&chunks_index, compare_chunks_index);
+	if (by_hash)
+		INIT_IV_AVL_TREE(&chunks_write, compare_chunks_hash);
+	else
+		INIT_IV_AVL_TREE(&chunks_write, compare_chunks_index);
 
 	for (i = 0; i < 65536; i++) {
 		if (chunks_hash[i].root != NULL)
-			insert_tree_index(chunks_hash[i].root);
+			insert_tree_write(chunks_hash[i].root);
 	}
 }
 
@@ -349,7 +353,7 @@ static int cp_splitimage(const char *image, const struct timespec *mtime)
 
 	scan_repos();
 
-	build_tree_index();
+	build_tree_write(!!(fd_imgfile == -1));
 
 	times[0].tv_sec = 0;
 	times[0].tv_nsec = UTIME_OMIT;
@@ -358,7 +362,7 @@ static int cp_splitimage(const char *image, const struct timespec *mtime)
 
 	pthread_mutex_init(&lock, NULL);
 	i = 0;
-	an = iv_avl_tree_min(&chunks_index);
+	an = iv_avl_tree_min(&chunks_write);
 	errors_seen = 0;
 
 	run_threads(write_thread, NULL, 128);
