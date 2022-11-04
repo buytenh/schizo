@@ -863,6 +863,85 @@ static int repomount_readdir(const char *path, void *buf,
 	return ret;
 }
 
+static ssize_t zero_chunk_from(struct repomount_file_info *fh,
+			       uint64_t chunk_index, uint32_t chunk_offset,
+			       off_t length)
+{
+	uint32_t chunk_size;
+	size_t tozero;
+	struct chunk *c;
+
+	chunk_size = compute_chunk_size(fh, chunk_index);
+
+	tozero = chunk_size - chunk_offset;
+	if (tozero > length)
+		tozero = length;
+
+	pthread_mutex_lock(&fh->lock);
+
+	c = __find_chunk(fh, chunk_index);
+
+	if (c == NULL && tozero == fh->size_firstchunk) {
+		int ret;
+
+		if (!fh->wrote_empty_chunk) {
+			c = alloca(sizeof(*c) + fh->size_firstchunk);
+			c->chunk_index = chunk_index;
+			c->length = fh->size_firstchunk;
+			clock_gettime(CLOCK_REALTIME, &c->last_write);
+			memset(c->buf, 0, fh->size_firstchunk);
+
+			__write_chunk(fh, c, fh->empty_chunk_hash);
+			fh->wrote_empty_chunk = true;
+		}
+
+		ret = xpwrite(fh->fd, fh->empty_chunk_hash, hash_size,
+			      chunk_index * hash_size);
+		if (ret != hash_size) {
+			if (ret >= 0) {
+				fprintf(stderr, "zero_chunk_from: "
+						"short write\n");
+			}
+			abort();
+		}
+
+		pthread_mutex_unlock(&fh->lock);
+	} else {
+		if (c != NULL) {
+			iv_list_del(&c->list_lru);
+			iv_list_add_tail(&c->list_lru, &fh->lru);
+
+			pthread_mutex_lock(&c->lock);
+			pthread_mutex_unlock(&fh->lock);
+
+			while (c->state == STATE_READING) {
+				c->num_waiters++;
+				pthread_cond_wait(&c->state_io_complete,
+						  &c->lock);
+				c->num_waiters--;
+			}
+		} else {
+			c = __get_locked_chunk_wait_readable(fh,
+						chunk_index, true);
+			if (c == NULL)
+				return -EIO;
+		}
+
+		if (c->state == STATE_READ_ERROR) {
+			pthread_mutex_unlock(&c->lock);
+			return -EIO;
+		}
+
+		__wait_writeout_done(c);
+
+		c->state = STATE_DIRTY;
+		memset(c->buf + chunk_offset, 0, tozero);
+		pthread_mutex_unlock(&c->lock);
+	}
+
+	return tozero;
+}
+
 static int repomount_fallocate(const char *path, int mode, off_t offset,
 			       off_t length, struct fuse_file_info *fi)
 {
@@ -882,7 +961,23 @@ static int repomount_fallocate(const char *path, int mode, off_t offset,
 	if (offset + length > fh->size)
 		length = fh->size - offset;
 
-	return -EINVAL;
+	while (length) {
+		uint64_t chunk_index;
+		uint32_t chunk_offset;
+		ssize_t ret;
+
+		chunk_index = offset / fh->size_firstchunk;
+		chunk_offset = offset % fh->size_firstchunk;
+
+		ret = zero_chunk_from(fh, chunk_index, chunk_offset, length);
+		if (ret < 0)
+			return ret;
+
+		offset += ret;
+		length -= ret;
+	}
+
+	return 0;
 }
 
 static struct fuse_operations repomount_oper = {
