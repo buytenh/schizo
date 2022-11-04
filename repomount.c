@@ -325,8 +325,8 @@ eio:
 	return processed ? processed : -EIO;
 }
 
-static void write_chunk(struct repomount_file_info *fh,
-			struct chunk *c, uint8_t *hash)
+static void __write_chunk(struct repomount_file_info *fh,
+			  struct chunk *c, uint8_t *hash)
 {
 	struct timespec times[2];
 	int copies;
@@ -340,24 +340,29 @@ static void write_chunk(struct repomount_file_info *fh,
 
 	copies = reposet_write_chunk(&rs, hash, c->buf, c->length, times);
 	if (copies == 0) {
-		fprintf(stderr, "write_chunk: no copies written\n");
+		fprintf(stderr, "__write_chunk: no copies written\n");
+		abort();
+	}
+}
+
+static void write_chunk(struct repomount_file_info *fh, struct chunk *c)
+{
+	uint8_t hash[hash_size];
+	int ret;
+
+	__write_chunk(fh, c, hash);
+
+	ret = xpwrite(fh->fd, hash, hash_size, c->chunk_index * hash_size);
+	if (ret != hash_size) {
+		if (ret >= 0)
+			fprintf(stderr, "write_chunk: short write\n");
 		abort();
 	}
 }
 
 static void __flush_chunk(struct repomount_file_info *fh, struct chunk *c)
 {
-	uint8_t hash[hash_size];
-	int ret;
-
-	write_chunk(fh, c, hash);
-
-	ret = xpwrite(fh->fd, hash, hash_size, c->chunk_index * hash_size);
-	if (ret != hash_size) {
-		if (ret >= 0)
-			fprintf(stderr, "__flush_chunk: short write\n");
-		abort();
-	}
+	write_chunk(fh, c);
 
 	iv_avl_tree_delete(&fh->chunks, &c->an);
 	fh->num_chunks--;
