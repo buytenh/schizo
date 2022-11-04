@@ -724,7 +724,6 @@ static int repomount_fallocate(const char *path, int mode, off_t offset,
 			       off_t length, struct fuse_file_info *fi)
 {
 	struct repomount_file_info *fh = (void *)fi->fh;
-	int ret;
 
 	if (!(mode & FALLOC_FL_PUNCH_HOLE))
 		return -EINVAL;
@@ -740,73 +739,7 @@ static int repomount_fallocate(const char *path, int mode, off_t offset,
 	if (offset + length > fh->size)
 		length = fh->size - offset;
 
-	pthread_mutex_lock(&fh->lock);
-
-	ret = 0;
-	while (length) {
-		uint64_t chunk_index;
-		uint32_t chunk_offset;
-		uint32_t chunk_size;
-		size_t chunk_tozero;
-		struct dirty_chunk *c;
-
-		chunk_index = offset / fh->size_firstchunk;
-		chunk_offset = offset % fh->size_firstchunk;
-
-		chunk_size = compute_chunk_size(fh, chunk_index);
-
-		chunk_tozero = chunk_size - chunk_offset;
-		if (chunk_tozero > length)
-			chunk_tozero = length;
-
-		c = __find_dirty_chunk(fh, chunk_index);
-		if (c == NULL && chunk_tozero < fh->size_firstchunk) {
-			if (chunk_tozero < chunk_size)
-				c = __get_dirty_chunk(fh, chunk_index, 1);
-			else
-				c = __get_dirty_chunk(fh, chunk_index, 0);
-
-			if (c == NULL) {
-				ret = -EIO;
-				goto out;
-			}
-		}
-
-		if (c != NULL) {
-			memset(c->buf + chunk_offset, 0, chunk_tozero);
-		} else {
-			int ret;
-
-			if (!fh->wrote_empty_chunk) {
-				c = alloca(sizeof(*c) + fh->size_firstchunk);
-				c->chunk_index = chunk_index;
-				c->length = fh->size_firstchunk;
-				clock_gettime(CLOCK_REALTIME, &c->last_write);
-				memset(c->buf, 0, fh->size_firstchunk);
-
-				write_dirty_chunk(fh, c, fh->empty_chunk_hash);
-				fh->wrote_empty_chunk = true;
-			}
-
-			ret = xpwrite(fh->fd, fh->empty_chunk_hash, hash_size,
-				      chunk_index * hash_size);
-			if (ret != hash_size) {
-				if (ret >= 0) {
-					fprintf(stderr, "repomount_fallocate: "
-							"short write\n");
-				}
-				abort();
-			}
-		}
-
-		offset += chunk_tozero;
-		length -= chunk_tozero;
-	}
-
-out:
-	pthread_mutex_unlock(&fh->lock);
-
-	return ret;
+	return -EINVAL;
 }
 
 static struct fuse_operations repomount_oper = {
