@@ -39,7 +39,7 @@
 #include "reposet.h"
 #include "rw.h"
 
-#define MAX_DIRTY_CHUNKS	512
+#define MAX_CHUNKS		512
 
 struct repomount_file_info {
 	int			fd;
@@ -50,15 +50,15 @@ struct repomount_file_info {
 	int			writeable;
 
 	pthread_mutex_t		lock;
-	struct iv_avl_tree	dirty_chunks;
-	uint64_t		num_dirty_chunks;
+	struct iv_avl_tree	chunks;
+	uint64_t		num_chunks;
 	struct iv_list_head	lru;
 
 	bool			wrote_empty_chunk;
 	uint8_t			empty_chunk_hash[];
 };
 
-struct dirty_chunk {
+struct chunk {
 	struct iv_avl_node	an;
 	uint64_t		chunk_index;
 	uint32_t		length;
@@ -155,14 +155,14 @@ static int repomount_truncate(const char *path, off_t length,
 	return -EINVAL;
 }
 
-static int compare_dirty_chunks(const struct iv_avl_node *_a,
-				const struct iv_avl_node *_b)
+static int compare_chunks(const struct iv_avl_node *_a,
+			  const struct iv_avl_node *_b)
 {
-	const struct dirty_chunk *a;
-	const struct dirty_chunk *b;
+	const struct chunk *a;
+	const struct chunk *b;
 
-	a = iv_container_of(_a, struct dirty_chunk, an);
-	b = iv_container_of(_b, struct dirty_chunk, an);
+	a = iv_container_of(_a, struct chunk, an);
+	b = iv_container_of(_b, struct chunk, an);
 
 	if (a->chunk_index < b->chunk_index)
 		return -1;
@@ -209,8 +209,8 @@ static int repomount_open(const char *path, struct fuse_file_info *fi)
 	fh->writeable = writeable;
 
 	pthread_mutex_init(&fh->lock, NULL);
-	INIT_IV_AVL_TREE(&fh->dirty_chunks, compare_dirty_chunks);
-	fh->num_dirty_chunks = 0;
+	INIT_IV_AVL_TREE(&fh->chunks, compare_chunks);
+	fh->num_chunks = 0;
 	INIT_IV_LIST_HEAD(&fh->lru);
 
 	fh->wrote_empty_chunk = false;
@@ -220,16 +220,16 @@ static int repomount_open(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
-static struct dirty_chunk *
-__find_dirty_chunk(struct repomount_file_info *fh, uint64_t chunk_index)
+static struct chunk *__find_chunk(struct repomount_file_info *fh,
+				  uint64_t chunk_index)
 {
 	struct iv_avl_node *an;
 
-	an = fh->dirty_chunks.root;
+	an = fh->chunks.root;
 	while (an != NULL) {
-		struct dirty_chunk *c;
+		struct chunk *c;
 
-		c = iv_container_of(an, struct dirty_chunk, an);
+		c = iv_container_of(an, struct chunk, an);
 		if (chunk_index == c->chunk_index)
 			return c;
 
@@ -277,7 +277,7 @@ static int repomount_read(const char *path, char *buf, size_t size,
 		uint64_t chunk_index;
 		uint32_t chunk_offset;
 		size_t chunk_toread;
-		struct dirty_chunk *c;
+		struct chunk *c;
 
 		chunk_index = offset / fh->size_firstchunk;
 		chunk_offset = offset % fh->size_firstchunk;
@@ -286,7 +286,7 @@ static int repomount_read(const char *path, char *buf, size_t size,
 		if (chunk_toread > size)
 			chunk_toread = size;
 
-		c = __find_dirty_chunk(fh, chunk_index);
+		c = __find_chunk(fh, chunk_index);
 		if (c == NULL) {
 			uint8_t hash[hash_size];
 			uint32_t chunk_size;
@@ -325,8 +325,8 @@ eio:
 	return processed ? processed : -EIO;
 }
 
-static void write_dirty_chunk(struct repomount_file_info *fh,
-			      struct dirty_chunk *c, uint8_t *hash)
+static void write_chunk(struct repomount_file_info *fh,
+			struct chunk *c, uint8_t *hash)
 {
 	struct timespec times[2];
 	int copies;
@@ -340,41 +340,40 @@ static void write_dirty_chunk(struct repomount_file_info *fh,
 
 	copies = reposet_write_chunk(&rs, hash, c->buf, c->length, times);
 	if (copies == 0) {
-		fprintf(stderr, "write_dirty_chunk: no copies written\n");
+		fprintf(stderr, "write_chunk: no copies written\n");
 		abort();
 	}
 }
 
-static void __flush_dirty_chunk(struct repomount_file_info *fh,
-				struct dirty_chunk *c)
+static void __flush_chunk(struct repomount_file_info *fh, struct chunk *c)
 {
 	uint8_t hash[hash_size];
 	int ret;
 
-	write_dirty_chunk(fh, c, hash);
+	write_chunk(fh, c, hash);
 
 	ret = xpwrite(fh->fd, hash, hash_size, c->chunk_index * hash_size);
 	if (ret != hash_size) {
 		if (ret >= 0)
-			fprintf(stderr, "__flush_dirty_chunk: short write\n");
+			fprintf(stderr, "__flush_chunk: short write\n");
 		abort();
 	}
 
-	iv_avl_tree_delete(&fh->dirty_chunks, &c->an);
-	fh->num_dirty_chunks--;
+	iv_avl_tree_delete(&fh->chunks, &c->an);
+	fh->num_chunks--;
 	iv_list_del(&c->list_lru);
 
 	free(c);
 }
 
-static int __flush_one_dirty_chunk(struct repomount_file_info *fh)
+static int __flush_one_chunk(struct repomount_file_info *fh)
 {
 	if (!iv_list_empty(&fh->lru)) {
-		struct dirty_chunk *c;
+		struct chunk *c;
 
-		c = iv_container_of(fh->lru.next, struct dirty_chunk,
+		c = iv_container_of(fh->lru.next, struct chunk,
 				    list_lru);
-		__flush_dirty_chunk(fh, c);
+		__flush_chunk(fh, c);
 
 		return 1;
 	}
@@ -382,14 +381,13 @@ static int __flush_one_dirty_chunk(struct repomount_file_info *fh)
 	return 0;
 }
 
-static struct dirty_chunk *
-__get_dirty_chunk(struct repomount_file_info *fh, uint64_t chunk_index,
-		  int read_backing_data)
+static struct chunk *__get_chunk(struct repomount_file_info *fh,
+				 uint64_t chunk_index, int read_backing_data)
 {
-	struct dirty_chunk *c;
+	struct chunk *c;
 	uint32_t chunk_size;
 
-	c = __find_dirty_chunk(fh, chunk_index);
+	c = __find_chunk(fh, chunk_index);
 	if (c != NULL) {
 		iv_list_del(&c->list_lru);
 		iv_list_add_tail(&c->list_lru, &fh->lru);
@@ -397,8 +395,8 @@ __get_dirty_chunk(struct repomount_file_info *fh, uint64_t chunk_index,
 		return c;
 	}
 
-	while (fh->num_dirty_chunks >= MAX_DIRTY_CHUNKS) {
-		if (!__flush_one_dirty_chunk(fh))
+	while (fh->num_chunks >= MAX_CHUNKS) {
+		if (!__flush_one_chunk(fh))
 			break;
 	}
 
@@ -436,8 +434,8 @@ __get_dirty_chunk(struct repomount_file_info *fh, uint64_t chunk_index,
 	iv_list_add(&c->list_lru, &fh->lru);
 	clock_gettime(CLOCK_REALTIME, &c->last_write);
 
-	iv_avl_tree_insert(&fh->dirty_chunks, &c->an);
-	fh->num_dirty_chunks++;
+	iv_avl_tree_insert(&fh->chunks, &c->an);
+	fh->num_chunks++;
 
 	return c;
 }
@@ -468,7 +466,7 @@ static int repomount_write(const char *path, const char *buf, size_t size,
 		uint64_t chunk_index;
 		uint32_t chunk_offset;
 		uint32_t chunk_size;
-		struct dirty_chunk *c;
+		struct chunk *c;
 		size_t chunk_towrite;
 
 		chunk_index = offset / fh->size_firstchunk;
@@ -477,9 +475,9 @@ static int repomount_write(const char *path, const char *buf, size_t size,
 		chunk_size = compute_chunk_size(fh, chunk_index);
 
 		if (chunk_offset != 0 || size < chunk_size)
-			c = __get_dirty_chunk(fh, chunk_index, 1);
+			c = __get_chunk(fh, chunk_index, 1);
 		else
-			c = __get_dirty_chunk(fh, chunk_index, 0);
+			c = __get_chunk(fh, chunk_index, 0);
 
 		if (c == NULL)
 			goto eio;
@@ -534,29 +532,29 @@ static int repomount_statfs(const char *path, struct statvfs *buf)
 
 static void flush_file(struct repomount_file_info *fh)
 {
-	int dirty_chunks;
+	int chunks;
 	struct iv_avl_node *an;
 
 	pthread_mutex_lock(&fh->lock);
 
-	dirty_chunks = 0;
-	iv_avl_tree_for_each (an, &fh->dirty_chunks)
-		dirty_chunks++;
+	chunks = 0;
+	iv_avl_tree_for_each (an, &fh->chunks)
+		chunks++;
 
-	if (dirty_chunks) {
+	if (chunks) {
 		int i;
 
 		i = 0;
-		while (!iv_avl_tree_empty(&fh->dirty_chunks)) {
-			struct dirty_chunk *c;
+		while (!iv_avl_tree_empty(&fh->chunks)) {
+			struct chunk *c;
 
 			fprintf(stderr, "\rfd %d: flushing chunk %d/%d",
-				fh->fd, ++i, dirty_chunks);
+				fh->fd, ++i, chunks);
 
-			an = iv_avl_tree_min(&fh->dirty_chunks);
+			an = iv_avl_tree_min(&fh->chunks);
 
-			c = iv_container_of(an, struct dirty_chunk, an);
-			__flush_dirty_chunk(fh, c);
+			c = iv_container_of(an, struct chunk, an);
+			__flush_chunk(fh, c);
 		}
 
 		fprintf(stderr, "\n");
