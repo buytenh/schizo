@@ -42,20 +42,20 @@
 #define MAX_DIRTY_CHUNKS	512
 
 struct repomount_file_info {
-	int		fd;
-	uint64_t	numchunks;
-	uint64_t	size;
-	uint32_t	size_firstchunk;
+	int			fd;
+	uint64_t		numchunks;
+	uint64_t		size;
+	uint32_t		size_firstchunk;
 
-	int		writeable;
+	int			writeable;
 
 	pthread_mutex_t		lock;
 	struct iv_avl_tree	dirty_chunks;
 	uint64_t		num_dirty_chunks;
 	struct iv_list_head	lru;
 
-	bool		wrote_empty_chunk;
-	uint8_t		empty_chunk_hash[];
+	bool			wrote_empty_chunk;
+	uint8_t			empty_chunk_hash[];
 };
 
 struct dirty_chunk {
