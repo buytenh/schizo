@@ -242,6 +242,67 @@ static struct chunk *__find_chunk(struct repomount_file_info *fh,
 	return NULL;
 }
 
+static void __write_chunk(struct repomount_file_info *fh,
+			  struct chunk *c, uint8_t *hash)
+{
+	struct timespec times[2];
+	int copies;
+
+	gcry_md_hash_buffer(hash_algo, hash, c->buf, c->length);
+
+	times[0].tv_sec = 0;
+	times[0].tv_nsec = UTIME_OMIT;
+	times[1].tv_sec = c->last_write.tv_sec;
+	times[1].tv_nsec = c->last_write.tv_nsec;
+
+	copies = reposet_write_chunk(&rs, hash, c->buf, c->length, times);
+	if (copies == 0) {
+		fprintf(stderr, "__write_chunk: no copies written\n");
+		abort();
+	}
+}
+
+static void write_chunk(struct repomount_file_info *fh, struct chunk *c)
+{
+	uint8_t hash[hash_size];
+	int ret;
+
+	__write_chunk(fh, c, hash);
+
+	ret = xpwrite(fh->fd, hash, hash_size, c->chunk_index * hash_size);
+	if (ret != hash_size) {
+		if (ret >= 0)
+			fprintf(stderr, "write_chunk: short write\n");
+		abort();
+	}
+}
+
+static void __flush_chunk(struct repomount_file_info *fh, struct chunk *c)
+{
+	write_chunk(fh, c);
+
+	iv_avl_tree_delete(&fh->chunks, &c->an);
+	fh->num_chunks--;
+	iv_list_del(&c->list_lru);
+
+	free(c);
+}
+
+static int __flush_one_chunk(struct repomount_file_info *fh)
+{
+	if (!iv_list_empty(&fh->lru)) {
+		struct chunk *c;
+
+		c = iv_container_of(fh->lru.next, struct chunk,
+				    list_lru);
+		__flush_chunk(fh, c);
+
+		return 1;
+	}
+
+	return 0;
+}
+
 static uint32_t
 compute_chunk_size(struct repomount_file_info *fh, uint64_t chunk_index)
 {
@@ -252,6 +313,66 @@ compute_chunk_size(struct repomount_file_info *fh, uint64_t chunk_index)
 		chunk_size = fh->size - (fh->numchunks - 1) * chunk_size;
 
 	return chunk_size;
+}
+
+static struct chunk *
+__get_chunk(struct repomount_file_info *fh, uint64_t chunk_index,
+	    int read_backing_data)
+{
+	struct chunk *c;
+	uint32_t chunk_size;
+
+	c = __find_chunk(fh, chunk_index);
+	if (c != NULL) {
+		iv_list_del(&c->list_lru);
+		iv_list_add_tail(&c->list_lru, &fh->lru);
+		clock_gettime(CLOCK_REALTIME, &c->last_write);
+		return c;
+	}
+
+	while (fh->num_chunks >= MAX_CHUNKS) {
+		if (!__flush_one_chunk(fh))
+			break;
+	}
+
+	c = malloc(sizeof(*c) + fh->size_firstchunk);
+	if (c == NULL)
+		return NULL;
+
+	chunk_size = compute_chunk_size(fh, chunk_index);
+
+	if (read_backing_data) {
+		uint8_t hash[hash_size];
+		int ret;
+
+		ret = xpread(fh->fd, hash, hash_size, chunk_index * hash_size);
+		if (ret != hash_size) {
+			free(c);
+			return NULL;
+		}
+
+		if (reposet_read_chunk(&rs, hash, c->buf, chunk_size) < 0) {
+			free(c);
+			return NULL;
+		}
+
+		if (chunk_size < fh->size_firstchunk) {
+			memset(c->buf + chunk_size, 0,
+			       fh->size_firstchunk - chunk_size);
+		}
+	} else {
+		memset(c->buf, 0, fh->size_firstchunk);
+	}
+
+	c->chunk_index = chunk_index;
+	c->length = chunk_size;
+	iv_list_add(&c->list_lru, &fh->lru);
+	clock_gettime(CLOCK_REALTIME, &c->last_write);
+
+	iv_avl_tree_insert(&fh->chunks, &c->an);
+	fh->num_chunks++;
+
+	return c;
 }
 
 static int repomount_read(const char *path, char *buf, size_t size,
@@ -323,126 +444,6 @@ static int repomount_read(const char *path, char *buf, size_t size,
 
 eio:
 	return processed ? processed : -EIO;
-}
-
-static void __write_chunk(struct repomount_file_info *fh,
-			  struct chunk *c, uint8_t *hash)
-{
-	struct timespec times[2];
-	int copies;
-
-	gcry_md_hash_buffer(hash_algo, hash, c->buf, c->length);
-
-	times[0].tv_sec = 0;
-	times[0].tv_nsec = UTIME_OMIT;
-	times[1].tv_sec = c->last_write.tv_sec;
-	times[1].tv_nsec = c->last_write.tv_nsec;
-
-	copies = reposet_write_chunk(&rs, hash, c->buf, c->length, times);
-	if (copies == 0) {
-		fprintf(stderr, "__write_chunk: no copies written\n");
-		abort();
-	}
-}
-
-static void write_chunk(struct repomount_file_info *fh, struct chunk *c)
-{
-	uint8_t hash[hash_size];
-	int ret;
-
-	__write_chunk(fh, c, hash);
-
-	ret = xpwrite(fh->fd, hash, hash_size, c->chunk_index * hash_size);
-	if (ret != hash_size) {
-		if (ret >= 0)
-			fprintf(stderr, "write_chunk: short write\n");
-		abort();
-	}
-}
-
-static void __flush_chunk(struct repomount_file_info *fh, struct chunk *c)
-{
-	write_chunk(fh, c);
-
-	iv_avl_tree_delete(&fh->chunks, &c->an);
-	fh->num_chunks--;
-	iv_list_del(&c->list_lru);
-
-	free(c);
-}
-
-static int __flush_one_chunk(struct repomount_file_info *fh)
-{
-	if (!iv_list_empty(&fh->lru)) {
-		struct chunk *c;
-
-		c = iv_container_of(fh->lru.next, struct chunk,
-				    list_lru);
-		__flush_chunk(fh, c);
-
-		return 1;
-	}
-
-	return 0;
-}
-
-static struct chunk *__get_chunk(struct repomount_file_info *fh,
-				 uint64_t chunk_index, int read_backing_data)
-{
-	struct chunk *c;
-	uint32_t chunk_size;
-
-	c = __find_chunk(fh, chunk_index);
-	if (c != NULL) {
-		iv_list_del(&c->list_lru);
-		iv_list_add_tail(&c->list_lru, &fh->lru);
-		clock_gettime(CLOCK_REALTIME, &c->last_write);
-		return c;
-	}
-
-	while (fh->num_chunks >= MAX_CHUNKS) {
-		if (!__flush_one_chunk(fh))
-			break;
-	}
-
-	c = malloc(sizeof(*c) + fh->size_firstchunk);
-	if (c == NULL)
-		return NULL;
-
-	chunk_size = compute_chunk_size(fh, chunk_index);
-
-	if (read_backing_data) {
-		uint8_t hash[hash_size];
-		int ret;
-
-		ret = xpread(fh->fd, hash, hash_size, chunk_index * hash_size);
-		if (ret != hash_size) {
-			free(c);
-			return NULL;
-		}
-
-		if (reposet_read_chunk(&rs, hash, c->buf, chunk_size) < 0) {
-			free(c);
-			return NULL;
-		}
-
-		if (chunk_size < fh->size_firstchunk) {
-			memset(c->buf + chunk_size, 0,
-			       fh->size_firstchunk - chunk_size);
-		}
-	} else {
-		memset(c->buf, 0, fh->size_firstchunk);
-	}
-
-	c->chunk_index = chunk_index;
-	c->length = chunk_size;
-	iv_list_add(&c->list_lru, &fh->lru);
-	clock_gettime(CLOCK_REALTIME, &c->last_write);
-
-	iv_avl_tree_insert(&fh->chunks, &c->an);
-	fh->num_chunks++;
-
-	return c;
 }
 
 static int repomount_write(const char *path, const char *buf, size_t size,
