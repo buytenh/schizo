@@ -804,7 +804,7 @@ static int repomount_fallocate(const char *path, int mode, off_t offset,
 				memset(c->buf, 0, fh->size_firstchunk);
 
 				write_dirty_chunk(fh, c, fh->empty_chunk_hash);
-				fh->wrote_empty_chunk = 1;
+				fh->wrote_empty_chunk = true;
 			}
 
 			ret = xpwrite(fh->fd, fh->empty_chunk_hash, hash_size,
