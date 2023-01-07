@@ -61,7 +61,8 @@ int reposet_open_image(const struct reposet *rs,
 int reposet_stat_image(const struct reposet *rs, int fd,
 		       struct image_info *info, struct stat *buf);
 
-int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash);
+int reposet_read_chunk(const struct reposet *rs, const uint8_t *hash,
+		       uint8_t *data, int datalen);
 
 int reposet_undelete_chunk(const struct reposet *rs, const uint8_t *hash);
 

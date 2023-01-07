@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <gcrypt.h>
 #include <limits.h>
 #include <string.h>
 #include <time.h>
@@ -243,7 +244,7 @@ int reposet_stat_image(const struct reposet *rs, int fd,
 	return 0;
 }
 
-int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash)
+static int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash)
 {
 	char name[6 + B64SIZE(rs->hash_size) + 1];
 	struct iv_list_head *lh;
@@ -266,6 +267,67 @@ int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash)
 	}
 
 	return -1;
+}
+
+static void print_hash(const uint8_t *hash, int hash_size)
+{
+	int i;
+
+	for (i = 0; i < hash_size; i++)
+		fprintf(stderr, "%.2x", hash[i]);
+}
+
+int reposet_read_chunk(const struct reposet *rs, const uint8_t *hash,
+		       uint8_t *data, int datalen)
+{
+	int fd;
+	ssize_t ret;
+	uint8_t computed_hash[rs->hash_size];
+
+	fd = reposet_open_chunk(rs, hash);
+	if (fd < 0) {
+		fprintf(stderr, "reposet_read_chunk: can't open chunk ");
+		print_hash(hash, rs->hash_size);
+		fprintf(stderr, "\n");
+
+		return -1;
+	}
+
+	ret = xpread(fd, data, datalen, 0);
+	if (ret != datalen) {
+		if (ret < 0) {
+			fprintf(stderr, "reposet_read_chunk: error %s while "
+					"reading chunk ", strerror(errno));
+			print_hash(hash, rs->hash_size);
+			fprintf(stderr, "\n");
+		} else {
+			fprintf(stderr, "reposet_read_chunk: short read of "
+					"%jd (expected %jd) while reading "
+					"chunk ",
+			(intmax_t)ret, (intmax_t)datalen);
+			print_hash(hash, rs->hash_size);
+			fprintf(stderr, "\n");
+		}
+		close(fd);
+
+		return -1;
+	}
+
+	close(fd);
+
+	gcry_md_hash_buffer(rs->hash_algo, computed_hash, data, datalen);
+
+	if (memcmp(hash, computed_hash, rs->hash_size)) {
+		fprintf(stderr, "reposet_read_chunk: hash mismatch for chunk ");
+		print_hash(hash, rs->hash_size);
+		fprintf(stderr, " (got: ");
+		print_hash(computed_hash, rs->hash_size);
+		fprintf(stderr, ")\n");
+
+		return -1;
+	}
+
+	return 0;
 }
 
 int reposet_undelete_chunk(const struct reposet *rs, const uint8_t *hash)

@@ -242,6 +242,18 @@ __find_dirty_chunk(struct repomount_file_info *fh, uint64_t chunk_index)
 	return NULL;
 }
 
+static uint32_t
+compute_chunk_size(struct repomount_file_info *fh, uint64_t chunk_index)
+{
+	uint32_t chunk_size;
+
+	chunk_size = fh->size_firstchunk;
+	if (chunk_index == fh->numchunks - 1)
+		chunk_size = fh->size - (fh->numchunks - 1) * chunk_size;
+
+	return chunk_size;
+}
+
 static int repomount_read(const char *path, char *buf, size_t size,
 			  off_t offset, struct fuse_file_info *fi)
 {
@@ -266,7 +278,6 @@ static int repomount_read(const char *path, char *buf, size_t size,
 		uint32_t chunk_offset;
 		size_t chunk_toread;
 		struct dirty_chunk *c;
-		int ret;
 
 		chunk_index = offset / fh->size_firstchunk;
 		chunk_offset = offset % fh->size_firstchunk;
@@ -278,7 +289,8 @@ static int repomount_read(const char *path, char *buf, size_t size,
 		c = __find_dirty_chunk(fh, chunk_index);
 		if (c == NULL) {
 			uint8_t hash[hash_size];
-			int fd;
+			uint32_t chunk_size;
+			uint8_t data[fh->size_firstchunk];
 
 			pthread_mutex_unlock(&fh->lock);
 
@@ -286,29 +298,23 @@ static int repomount_read(const char *path, char *buf, size_t size,
 				   chunk_index * hash_size) != hash_size)
 				goto eio;
 
-			fd = reposet_open_chunk(&rs, hash);
-			if (fd < 0)
+			chunk_size = compute_chunk_size(fh, chunk_index);
+
+			if (reposet_read_chunk(&rs, hash, data, chunk_size) < 0)
 				goto eio;
 
-			ret = xpread(fd, buf, chunk_toread, chunk_offset);
-			if (ret <= 0) {
-				close(fd);
-				goto eio;
-			}
-
-			close(fd);
+			memcpy(buf, data + chunk_offset, chunk_toread);
 
 			pthread_mutex_lock(&fh->lock);
 		} else {
 			memcpy(buf, c->buf + chunk_offset, chunk_toread);
-			ret = chunk_toread;
 		}
 
-		buf += ret;
-		size -= ret;
-		offset += ret;
+		buf += chunk_toread;
+		size -= chunk_toread;
+		offset += chunk_toread;
 
-		processed += ret;
+		processed += chunk_toread;
 	}
 
 	pthread_mutex_unlock(&fh->lock);
@@ -376,18 +382,6 @@ static int __flush_one_dirty_chunk(struct repomount_file_info *fh)
 	return 0;
 }
 
-static uint32_t
-compute_chunk_size(struct repomount_file_info *fh, uint64_t chunk_index)
-{
-	uint32_t chunk_size;
-
-	chunk_size = fh->size_firstchunk;
-	if (chunk_index == fh->numchunks - 1)
-		chunk_size = fh->size - (fh->numchunks - 1) * chunk_size;
-
-	return chunk_size;
-}
-
 static struct dirty_chunk *
 __get_dirty_chunk(struct repomount_file_info *fh, uint64_t chunk_index,
 		  int read_backing_data)
@@ -417,7 +411,6 @@ __get_dirty_chunk(struct repomount_file_info *fh, uint64_t chunk_index,
 	if (read_backing_data) {
 		uint8_t hash[hash_size];
 		int ret;
-		int fd;
 
 		ret = xpread(fh->fd, hash, hash_size, chunk_index * hash_size);
 		if (ret != hash_size) {
@@ -425,22 +418,10 @@ __get_dirty_chunk(struct repomount_file_info *fh, uint64_t chunk_index,
 			return NULL;
 		}
 
-		fd = reposet_open_chunk(&rs, hash);
-		if (fd < 0) {
+		if (reposet_read_chunk(&rs, hash, c->buf, chunk_size) < 0) {
 			free(c);
 			return NULL;
 		}
-
-		ret = xpread(fd, c->buf, chunk_size, 0);
-		if (ret != chunk_size) {
-			if (ret >= 0) {
-				fprintf(stderr, "get_dirty_chunk: short "
-						"read of %d\n", ret);
-			}
-			abort();
-		}
-
-		close(fd);
 
 		if (chunk_size < fh->size_firstchunk) {
 			memset(c->buf + chunk_size, 0,

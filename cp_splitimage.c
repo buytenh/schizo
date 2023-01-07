@@ -268,40 +268,27 @@ static int write_chunk(uint64_t index, int datalen)
 {
 	const uint8_t *hash;
 	uint8_t data[block_size];
-	uint8_t computed_hash[hash_size];
 
 	hash = hashes + index * hash_size;
 
 	if (fd_imgfile == -1) {
-		int fd_chunk;
-
-		fd_chunk = reposet_open_chunk(&rs_src, hash);
-		if (fd_chunk < 0) {
-			fprintf(stderr, "write_chunk: can't open chunk %jd\n",
-				(intmax_t)index);
+		if (reposet_read_chunk(&rs_src, hash, data, datalen) < 0)
 			return 1;
-		}
-
-		if (xpread(fd_chunk, data, datalen, 0) != datalen) {
-			close(fd_chunk);
-			return 1;
-		}
-
-		close(fd_chunk);
 	} else {
 		ssize_t ret;
+		uint8_t computed_hash[hash_size];
 
 		ret = xpread(fd_imgfile, data, datalen, index * block_size);
 		if (ret != datalen)
 			return 1;
-	}
 
-	gcry_md_hash_buffer(hash_algo, computed_hash, data, datalen);
+		gcry_md_hash_buffer(hash_algo, computed_hash, data, datalen);
 
-	if (memcmp(hash, computed_hash, hash_size)) {
-		fprintf(stderr, "write_chunk: hash mismatch "
-				"for chunk %jd\n", (intmax_t)index);
-		return 1;
+		if (memcmp(hash, computed_hash, hash_size)) {
+			fprintf(stderr, "write_chunk: hash mismatch "
+					"for chunk %jd\n", (intmax_t)index);
+			return 1;
+		}
 	}
 
 	if (reposet_write_chunk(&rs, hash, data, datalen, times) == 0)
