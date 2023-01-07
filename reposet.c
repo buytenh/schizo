@@ -36,6 +36,11 @@ void reposet_init(struct reposet *rs)
 	rs->hash_size = 0;
 }
 
+void reposet_set_hash_algo(struct reposet *rs, int hash_algo)
+{
+	rs->hash_algo = hash_algo;
+}
+
 void reposet_set_hash_size(struct reposet *rs, int hash_size)
 {
 	rs->hash_size = hash_size;

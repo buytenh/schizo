@@ -26,6 +26,7 @@
 
 struct reposet {
 	struct iv_list_head	repos;
+	int			hash_algo;
 	int			hash_size;
 };
 
@@ -47,6 +48,8 @@ struct image_info {
 };
 
 void reposet_init(struct reposet *rs);
+
+void reposet_set_hash_algo(struct reposet *rs, int hash_algo);
 
 void reposet_set_hash_size(struct reposet *rs, int hash_size);
 

@@ -198,6 +198,9 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
+	reposet_set_hash_algo(&rs, hash_algo);
+	reposet_set_hash_algo(&rs_src, hash_algo);
+
 	hash_size = gcry_md_get_algo_dlen(hash_algo);
 	reposet_set_hash_size(&rs, hash_size);
 	reposet_set_hash_size(&rs_src, hash_size);
