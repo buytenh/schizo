@@ -23,8 +23,10 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/fs.h>
 #include <pthread.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 #include "schizo.h"
 #include "threads.h"
@@ -99,6 +101,7 @@ static void *mkdir_thread(void *_dummy)
 int init(int argc, char *argv[])
 {
 	int i;
+	int ret;
 
 	if (argc == 0) {
 		pattern_length = 1;
@@ -122,15 +125,26 @@ int init(int argc, char *argv[])
 		return 1;
 	}
 
-	if (mkdir("chunks", 0777) < 0 && errno != EEXIST) {
+	ret = mkdir("chunks", 0777);
+	if (ret < 0 && errno != EEXIST) {
 		perror("mkdir");
 		return 1;
 	}
 
-	chunkdir = openat(AT_FDCWD, "chunks", O_DIRECTORY | O_PATH);
+	chunkdir = openat(AT_FDCWD, "chunks", O_DIRECTORY);
 	if (chunkdir < 0) {
 		perror("open");
 		return 1;
+	}
+
+	if (ret == 0) {
+		unsigned long flags;
+
+		ret = ioctl(chunkdir, FS_IOC_GETFLAGS, &flags);
+		if (ret == 0 && (flags & FS_NOCOW_FL) == 0) {
+			flags |= FS_NOCOW_FL;
+			ret = ioctl(chunkdir, FS_IOC_SETFLAGS, &flags);
+		}
 	}
 
 	pthread_mutex_init(&lock, NULL);
