@@ -244,7 +244,55 @@ int reposet_stat_image(const struct reposet *rs, int fd,
 	return 0;
 }
 
-static int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash)
+static void print_hash(const uint8_t *hash, int hash_size)
+{
+	int i;
+
+	for (i = 0; i < hash_size; i++)
+		fprintf(stderr, "%.2x", hash[i]);
+}
+
+static int read_chunk(const struct reposet *rs, struct repo *r, int fd,
+		      const uint8_t *hash, uint8_t *data, int datalen)
+{
+	ssize_t ret;
+	uint8_t computed_hash[rs->hash_size];
+
+	ret = xpread(fd, data, datalen, 0);
+	if (ret != datalen) {
+		fprintf(stderr, "reposet_read_chunk: ");
+		if (ret < 0) {
+			fprintf(stderr, "error %s while reading chunk ",
+				strerror(errno));
+		} else {
+			fprintf(stderr, "short read of %jd (expected %jd) "
+					"while reading chunk ",
+				(intmax_t)ret, (intmax_t)datalen);
+		}
+
+		print_hash(hash, rs->hash_size);
+		fprintf(stderr, " from repo %s\n", r->path);
+
+		return -1;
+	}
+
+	gcry_md_hash_buffer(rs->hash_algo, computed_hash, data, datalen);
+
+	if (memcmp(hash, computed_hash, rs->hash_size)) {
+		fprintf(stderr, "reposet_read_chunk: hash mismatch for chunk ");
+		print_hash(hash, rs->hash_size);
+		fprintf(stderr, " (got: ");
+		print_hash(computed_hash, rs->hash_size);
+		fprintf(stderr, " in repo %s\n", r->path);
+
+		return -1;
+	}
+
+	return 0;
+}
+
+int reposet_read_chunk(const struct reposet *rs, const uint8_t *hash,
+		       uint8_t *data, int datalen)
 {
 	char name[6 + B64SIZE(rs->hash_size) + 1];
 	struct iv_list_head *lh;
@@ -255,79 +303,29 @@ static int reposet_open_chunk(const struct reposet *rs, const uint8_t *hash)
 	iv_list_for_each (lh, &rs->repos) {
 		struct repo *r;
 		int fd;
+		int ret;
 
 		r = iv_container_of(lh, struct repo, list);
 
 		fd = openat(r->chunkdir, name, O_RDONLY);
-		if (fd >= 0)
-			return fd;
-
-		if (errno != ENOENT)
-			perror("openat");
-	}
-
-	return -1;
-}
-
-static void print_hash(const uint8_t *hash, int hash_size)
-{
-	int i;
-
-	for (i = 0; i < hash_size; i++)
-		fprintf(stderr, "%.2x", hash[i]);
-}
-
-int reposet_read_chunk(const struct reposet *rs, const uint8_t *hash,
-		       uint8_t *data, int datalen)
-{
-	int fd;
-	ssize_t ret;
-	uint8_t computed_hash[rs->hash_size];
-
-	fd = reposet_open_chunk(rs, hash);
-	if (fd < 0) {
-		fprintf(stderr, "reposet_read_chunk: can't open chunk ");
-		print_hash(hash, rs->hash_size);
-		fprintf(stderr, "\n");
-
-		return -1;
-	}
-
-	ret = xpread(fd, data, datalen, 0);
-	if (ret != datalen) {
-		if (ret < 0) {
-			fprintf(stderr, "reposet_read_chunk: error %s while "
-					"reading chunk ", strerror(errno));
-			print_hash(hash, rs->hash_size);
-			fprintf(stderr, "\n");
-		} else {
-			fprintf(stderr, "reposet_read_chunk: short read of "
-					"%jd (expected %jd) while reading "
-					"chunk ",
-			(intmax_t)ret, (intmax_t)datalen);
-			print_hash(hash, rs->hash_size);
-			fprintf(stderr, "\n");
+		if (fd < 0) {
+			if (errno != ENOENT)
+				perror("openat");
+			continue;
 		}
+
+		ret = read_chunk(rs, r, fd, hash, data, datalen);
 		close(fd);
 
-		return -1;
+		if (ret == 0)
+			return 0;
 	}
 
-	close(fd);
+	fprintf(stderr, "reposet_read_chunk: can't find good copy of chunk ");
+	print_hash(hash, rs->hash_size);
+	fprintf(stderr, "\n");
 
-	gcry_md_hash_buffer(rs->hash_algo, computed_hash, data, datalen);
-
-	if (memcmp(hash, computed_hash, rs->hash_size)) {
-		fprintf(stderr, "reposet_read_chunk: hash mismatch for chunk ");
-		print_hash(hash, rs->hash_size);
-		fprintf(stderr, " (got: ");
-		print_hash(computed_hash, rs->hash_size);
-		fprintf(stderr, ")\n");
-
-		return -1;
-	}
-
-	return 0;
+	return -1;
 }
 
 int reposet_undelete_chunk(const struct reposet *rs, const uint8_t *hash)
