@@ -246,10 +246,13 @@ int reposet_stat_image(const struct reposet *rs, int fd,
 
 static void print_hash(const uint8_t *hash, int hash_size)
 {
+	char h[2 * hash_size + 1];
 	int i;
 
 	for (i = 0; i < hash_size; i++)
-		fprintf(stderr, "%.2x", hash[i]);
+		sprintf(&h[2 * i], "%.2x", hash[i]);
+
+	fwrite(h, 1, 2 * hash_size, stderr);
 }
 
 static int read_chunk(const struct reposet *rs, struct repo *r, int fd,
