@@ -119,7 +119,7 @@ static void gc_thread_deinit(void *_gts)
 
 int gc(int argc, char *argv[])
 {
-	struct iv_list_head *lh;
+	int i;
 
 	if (argc)
 		return -1;
@@ -128,8 +128,8 @@ int gc(int argc, char *argv[])
 
 	enumerate_image_chunks(chunks, hash_size, num_images, &images, 128);
 
-	iv_list_for_each (lh, &rs.repos) {
-		r = iv_container_of(lh, struct repo, list);
+	for (i = 0; i < rs.num_repos; i++) {
+		r = rs.repos[i];
 
 		num_gcd = 0;
 

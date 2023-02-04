@@ -149,7 +149,7 @@ static int report_missing_chunks(void)
 
 int fsck(int argc, char *argv[])
 {
-	struct iv_list_head *lh;
+	int i;
 
 	if (argc)
 		return -1;
@@ -160,10 +160,10 @@ int fsck(int argc, char *argv[])
 
 	num = 0;
 
-	iv_list_for_each (lh, &rs.repos) {
+	for (i = 0; i < rs.num_repos; i++) {
 		struct repo *r;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs.repos[i];
 
 		enumerate_chunks(r, hash_size,
 				 sizeof(struct fsck_thread_state),

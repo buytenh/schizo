@@ -78,7 +78,7 @@ static int hash_size;
 static int repomount_getattr(const char *path, struct stat *buf,
 			     struct fuse_file_info *fi)
 {
-	struct iv_list_head *lh;
+	int i;
 	int fd;
 	int ret;
 
@@ -88,10 +88,10 @@ static int repomount_getattr(const char *path, struct stat *buf,
 	}
 
 	if (path[1] == 0) {
-		iv_list_for_each (lh, &rs.repos) {
+		for (i = 0; i < rs.num_repos; i++) {
 			struct repo *r;
 
-			r = iv_container_of(lh, struct repo, list);
+			r = rs.repos[i];
 
 			if (fstat(r->imagedir, buf) < 0) {
 				perror("fstat");
@@ -121,18 +121,18 @@ static int repomount_getattr(const char *path, struct stat *buf,
 
 static int repomount_readlink(const char *path, char *buf, size_t bufsiz)
 {
-	struct iv_list_head *lh;
+	int i;
 
 	if (path[0] != '/') {
 		fprintf(stderr, "readlink called with [%s]\n", path);
 		return -ENOENT;
 	}
 
-	iv_list_for_each (lh, &rs.repos) {
+	for (i = 0; i < rs.num_repos; i++) {
 		struct repo *r;
 		int ret;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs.repos[i];
 
 		ret = readlinkat(r->imagedir, path + 1, buf, bufsiz);
 		if (ret >= 0) {
@@ -509,18 +509,18 @@ eio:
 
 static int repomount_statfs(const char *path, struct statvfs *buf)
 {
-	struct iv_list_head *lh;
+	int i;
 
 	if (path[0] != '/') {
 		fprintf(stderr, "statfs called with [%s]\n", path);
 		return -ENOENT;
 	}
 
-	iv_list_for_each (lh, &rs.repos) {
+	for (i = 0; i < rs.num_repos; i++) {
 		struct repo *r;
 		int ret;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs.repos[i];
 
 		ret = fstatvfs(r->chunkdir, buf);
 		if (ret < 0)
@@ -632,7 +632,7 @@ static int repomount_readdir(const char *path, void *buf,
 {
 	const char *pp;
 	struct iv_avl_tree dentries;
-	struct iv_list_head *lh;
+	int i;
 	int ret;
 
 	if (path[0] != '/') {
@@ -648,12 +648,12 @@ static int repomount_readdir(const char *path, void *buf,
 	INIT_IV_AVL_TREE(&dentries, compare_dentries);
 
 	ret = 0;
-	iv_list_for_each (lh, &rs.repos) {
+	for (i = 0; i < rs.num_repos; i++) {
 		struct repo *r;
 		int fd;
 		DIR *dirp;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs.repos[i];
 
 		fd = openat(r->imagedir, pp, O_DIRECTORY | O_RDONLY);
 		if (fd < 0) {
@@ -917,7 +917,7 @@ int main(int argc, char *argv[])
 	hash_size = gcry_md_get_algo_dlen(hash_algo);
 	reposet_set_hash_size(&rs, hash_size);
 
-	if (iv_list_empty(&rs.repos)) {
+	if (rs.num_repos == 0) {
 		fprintf(stderr, "missing repositories\n");
 		fprintf(stderr, "see '%s --help' for usage\n", argv[0]);
 		return 1;

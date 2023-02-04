@@ -21,6 +21,7 @@
 #define __ENUMERATE_IMAGES_H
 
 #include <iv_avl.h>
+#include <iv_list.h>
 #include "reposet.h"
 
 struct image {

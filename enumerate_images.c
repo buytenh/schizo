@@ -153,16 +153,15 @@ static int scan_image_dir(struct iv_avl_tree *images, struct repo *r,
 
 int enumerate_images(struct iv_avl_tree *images, struct reposet *rs)
 {
-	struct iv_list_head *lh;
 	int i;
 	struct iv_avl_node *an;
 
 	INIT_IV_AVL_TREE(images, compare_images);
 
-	iv_list_for_each (lh, &rs->repos) {
+	for (i = 0; i < rs->num_repos; i++) {
 		struct repo *r;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs->repos[i];
 		scan_image_dir(images, r, r->imagedir, "", 0);
 	}
 

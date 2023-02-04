@@ -21,17 +21,19 @@
 #define __REPOSET_H
 
 #include <inttypes.h>
-#include <iv_list.h>
 #include <sys/stat.h>
 
+#define MAX_REPOS		256
+
 struct reposet {
-	struct iv_list_head	repos;
 	int			hash_algo;
 	int			hash_size;
+
+	int			num_repos;
+	struct repo		*repos[MAX_REPOS];
 };
 
 struct repo {
-	struct iv_list_head	list;
 	const char		*path;
 	int			repodir;
 	int			chunkdir;

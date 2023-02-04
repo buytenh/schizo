@@ -194,14 +194,13 @@ static void delete_chunk(struct iv_avl_node *an)
 
 static void scan_repos(void)
 {
-	struct iv_list_head *lh;
 	int i;
 
 	num_removed = 0;
-	iv_list_for_each (lh, &rs.repos) {
+	for (i = 0; i < rs.num_repos; i++) {
 		struct repo *r;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs.repos[i];
 
 		enumerate_chunks(r, hash_size,
 				 sizeof(struct scan_thread_state),

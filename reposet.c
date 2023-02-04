@@ -33,8 +33,10 @@
 
 void reposet_init(struct reposet *rs)
 {
-	INIT_IV_LIST_HEAD(&rs->repos);
+	rs->hash_algo = 0;
 	rs->hash_size = 0;
+
+	rs->num_repos = 0;
 }
 
 void reposet_set_hash_algo(struct reposet *rs, int hash_algo)
@@ -55,6 +57,11 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 	int deldir;
 	int imagedir;
 	struct repo *r;
+
+	if (rs->num_repos == MAX_REPOS) {
+		fprintf(stderr, "reposet_add_repo: repository limit reached\n");
+		return -1;
+	}
 
 	repodir = open(path, O_DIRECTORY | O_PATH);
 	if (repodir < 0)
@@ -92,7 +99,6 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 		return -1;
 	}
 
-	iv_list_add_tail(&r->list, &rs->repos);
 	r->path = strdup(path);
 	r->repodir = repodir;
 	r->chunkdir = chunkdir;
@@ -101,18 +107,20 @@ int reposet_add_repo(struct reposet *rs, const char *path)
 	r->imagedir = imagedir;
 	r->tmpdir = -1;
 
+	rs->repos[rs->num_repos++] = r;
+
 	return 0;
 }
 
 int reposet_open_image(const struct reposet *rs, const char *image, mode_t mode)
 {
-	struct iv_list_head *lh;
+	int i;
 
-	iv_list_for_each (lh, &rs->repos) {
+	for (i = 0; i < rs->num_repos; i++) {
 		struct repo *r;
 		int fd;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs->repos[i];
 
 		fd = openat(r->imagedir, image, mode);
 
@@ -137,7 +145,7 @@ chunk_size(const struct reposet *rs, int imagefd, uint64_t chunk_index)
 	uint8_t hash[rs->hash_size];
 	int ret;
 	char name[6 + B64SIZE(rs->hash_size) + 1];
-	struct iv_list_head *lh;
+	int i;
 
 	ret = xpread(imagefd, hash, rs->hash_size, chunk_index * rs->hash_size);
 	if (ret != rs->hash_size)
@@ -146,11 +154,11 @@ chunk_size(const struct reposet *rs, int imagefd, uint64_t chunk_index)
 	snprintf(name, sizeof(name), "%.2x/%.2x/", hash[0], hash[1]);
 	base64enc(name + 6, hash, rs->hash_size);
 
-	iv_list_for_each (lh, &rs->repos) {
+	for (i = 0; i < rs->num_repos; i++) {
 		struct repo *r;
 		struct stat buf;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs->repos[i];
 
 		if (fstatat(r->chunkdir, name, &buf, 0) < 0) {
 			if (errno != ENOENT) {
@@ -298,17 +306,17 @@ int reposet_read_chunk(const struct reposet *rs, const uint8_t *hash,
 		       uint8_t *data, int datalen)
 {
 	char name[6 + B64SIZE(rs->hash_size) + 1];
-	struct iv_list_head *lh;
+	int i;
 
 	snprintf(name, sizeof(name), "%.2x/%.2x/", hash[0], hash[1]);
 	base64enc(name + 6, hash, rs->hash_size);
 
-	iv_list_for_each (lh, &rs->repos) {
+	for (i = 0; i < rs->num_repos; i++) {
 		struct repo *r;
 		int fd;
 		int ret;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs->repos[i];
 
 		fd = openat(r->chunkdir, name, O_RDONLY);
 		if (fd < 0) {
@@ -336,7 +344,7 @@ int reposet_undelete_chunk(const struct reposet *rs, const uint8_t *hash)
 	char name[B64SIZE(rs->hash_size) + 1];
 	char dirname[6 + B64SIZE(rs->hash_size) + 1];
 	int undeleted;
-	struct iv_list_head *lh;
+	int i;
 
 	base64enc(name, hash, rs->hash_size);
 
@@ -346,10 +354,10 @@ int reposet_undelete_chunk(const struct reposet *rs, const uint8_t *hash)
 	dirname[6 + B64SIZE(rs->hash_size)] = 0;
 
 	undeleted = 0;
-	iv_list_for_each (lh, &rs->repos) {
+	for (i = 0; i < rs->num_repos; i++) {
 		struct repo *r;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs->repos[i];
 
 		if (r->deldir != -1) {
 			int ret;
@@ -523,15 +531,15 @@ int reposet_write_image(const struct reposet *rs, const char *image,
 {
 	uint64_t bytes;
 	int copies;
-	struct iv_list_head *lh;
+	int i;
 
 	bytes = num_chunks * rs->hash_size;
 
 	copies = 0;
-	iv_list_for_each (lh, &rs->repos) {
+	for (i = 0; i < rs->num_repos; i++) {
 		struct repo *r;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs->repos[i];
 
 		if (faccessat(r->imagedir, image, F_OK, 0) == 0)
 			continue;
@@ -563,18 +571,18 @@ int reposet_write_chunk(const struct reposet *rs, const uint8_t *hash,
 	char dirname[16];
 	char name[B64SIZE(rs->hash_size) + 1];
 	int copies;
-	struct iv_list_head *lh;
+	int i;
 
 	snprintf(dirname, sizeof(dirname), "%.2x/%.2x", hash[0], hash[1]);
 	base64enc(name, hash, rs->hash_size);
 
 	copies = 0;
-	iv_list_for_each (lh, &rs->repos) {
+	for (i = 0; i < rs->num_repos; i++) {
 		struct repo *r;
 		int dirfd;
 		struct stat chunkstat;
 
-		r = iv_container_of(lh, struct repo, list);
+		r = rs->repos[i];
 
 		dirfd = openat(r->chunkdir, dirname, O_DIRECTORY | O_PATH);
 		if (dirfd < 0) {

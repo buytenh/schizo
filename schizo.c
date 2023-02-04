@@ -209,13 +209,13 @@ int main(int argc, char *argv[])
 
 	if (tool == TOOL_CP || tool == TOOL_FSCK || tool == TOOL_GC ||
 	    tool == TOOL_SCRUB || tool == TOOL_SPLITIMAGE) {
-		if (iv_list_empty(&rs.repos)) {
+		if (rs.num_repos == 0) {
 			fprintf(stderr, "missing repositories\n");
 			return 1;
 		}
 	}
 
-	if (tool == TOOL_CP && iv_list_empty(&rs_src.repos)) {
+	if (tool == TOOL_CP && rs_src.num_repos == 0) {
 		fprintf(stderr, "missing src repositories\n");
 		return 1;
 	}
