@@ -25,6 +25,7 @@
 #include <fcntl.h>
 #include <gcrypt.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <time.h>
 #include "base64enc.h"
@@ -37,6 +38,8 @@ void reposet_init(struct reposet *rs)
 	rs->hash_size = 0;
 
 	rs->num_repos = 0;
+
+	rs->repo_read = 0;
 }
 
 void reposet_set_hash_algo(struct reposet *rs, int hash_algo)
@@ -302,21 +305,26 @@ static int read_chunk(const struct reposet *rs, struct repo *r, int fd,
 	return 0;
 }
 
-int reposet_read_chunk(const struct reposet *rs, const uint8_t *hash,
+int reposet_read_chunk(struct reposet *rs, const uint8_t *hash,
 		       uint8_t *data, int datalen)
 {
 	char name[6 + B64SIZE(rs->hash_size) + 1];
+	unsigned int first;
 	int i;
 
 	snprintf(name, sizeof(name), "%.2x/%.2x/", hash[0], hash[1]);
 	base64enc(name + 6, hash, rs->hash_size);
+
+	first = __atomic_fetch_add(&rs->repo_read, 1, __ATOMIC_RELAXED);
+	if (rs->num_repos)
+		first %= rs->num_repos;
 
 	for (i = 0; i < rs->num_repos; i++) {
 		struct repo *r;
 		int fd;
 		int ret;
 
-		r = rs->repos[i];
+		r = rs->repos[(first + i) % rs->num_repos];
 
 		fd = openat(r->chunkdir, name, O_RDONLY);
 		if (fd < 0) {
