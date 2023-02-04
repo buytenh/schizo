@@ -363,7 +363,7 @@ static int cp_splitimage(const char *image, const struct timespec *mtime)
 	if (fd_imgfile != -1)
 		close(fd_imgfile);
 
-	return 0;
+	return errors_seen;
 }
 
 int cp(int argc, char *argv[])

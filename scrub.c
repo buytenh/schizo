@@ -196,5 +196,5 @@ int scrub(int argc, char *argv[])
 		printf("\n");
 	}
 
-	return 0;
+	return num_mismatch ? 1 : 0;
 }

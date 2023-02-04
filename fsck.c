@@ -113,7 +113,7 @@ static int missing_chunk(struct chunk *c)
 	return 1;
 }
 
-static void report_missing_chunks(void)
+static int report_missing_chunks(void)
 {
 	uint64_t missing;
 	int i;
@@ -143,6 +143,8 @@ static void report_missing_chunks(void)
 				im->r->path, im->path, im->missing_chunks);
 		}
 	}
+
+	return missing ? 1 : 0;
 }
 
 int fsck(int argc, char *argv[])
@@ -169,7 +171,5 @@ int fsck(int argc, char *argv[])
 				 fsck_thread_deinit);
 	}
 
-	report_missing_chunks();
-
-	return 0;
+	return report_missing_chunks();
 }
