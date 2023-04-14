@@ -165,10 +165,95 @@ static int repomount_readlink(const char *path, char *buf, size_t bufsiz)
 	return -ENOENT;
 }
 
+static void __write_chunk(struct repomount_file_info *fh,
+			  struct chunk *c, uint8_t *hash)
+{
+	struct timespec times[2];
+	int copies;
+
+	gcry_md_hash_buffer(hash_algo, hash, c->buf, c->length);
+
+	times[0].tv_sec = 0;
+	times[0].tv_nsec = UTIME_OMIT;
+	times[1].tv_sec = c->last_write.tv_sec;
+	times[1].tv_nsec = c->last_write.tv_nsec;
+
+	copies = reposet_write_chunk(&rs, hash, c->buf, c->length, times);
+	if (copies == 0) {
+		fprintf(stderr, "__write_chunk: no copies written\n");
+		abort();
+	}
+}
+
+static void __check_write_empty_chunk(struct repomount_file_info *fh)
+{
+	if (!fh->wrote_empty_chunk) {
+		struct chunk *c;
+
+		c = alloca(sizeof(*c) + fh->size_firstchunk);
+		c->length = fh->size_firstchunk;
+		clock_gettime(CLOCK_REALTIME, &c->last_write);
+		memset(c->buf, 0, fh->size_firstchunk);
+
+		__write_chunk(fh, c, fh->empty_chunk_hash);
+		fh->wrote_empty_chunk = true;
+	}
+}
+
 static int repomount_truncate(const char *path, off_t length,
 			      struct fuse_file_info *fi)
 {
-	return -EINVAL;
+	struct repomount_file_info *fh = (void *)fi->fh;
+	uint64_t fromchunks;
+	uint64_t tochunks;
+	uint64_t i;
+
+	pthread_mutex_lock(&fh->lock);
+
+	if ((fh->size % fh->size_firstchunk) != 0) {
+		pthread_mutex_unlock(&fh->lock);
+		return -EINVAL;
+	}
+	fromchunks = fh->size / fh->size_firstchunk;
+
+	if ((length % fh->size_firstchunk) != 0) {
+		pthread_mutex_unlock(&fh->lock);
+		return -EINVAL;
+	}
+	tochunks = length / fh->size_firstchunk;
+
+	if (tochunks < fromchunks) {
+		pthread_mutex_unlock(&fh->lock);
+		return -EINVAL;
+	}
+
+	if (tochunks == fromchunks) {
+		pthread_mutex_unlock(&fh->lock);
+		return 0;
+	}
+
+	__check_write_empty_chunk(fh);
+
+	for (i = fromchunks; i < tochunks; i++) {
+		int ret;
+
+		ret = xpwrite(fh->fd, fh->empty_chunk_hash, hash_size,
+			      i * hash_size);
+		if (ret != hash_size) {
+			if (ret >= 0) {
+				fprintf(stderr, "repomount_truncate: "
+						"short write\n");
+			}
+			abort();
+		}
+	}
+
+	fh->numchunks = tochunks;
+	fh->size = length;
+
+	pthread_mutex_unlock(&fh->lock);
+
+	return 0;
 }
 
 static int compare_chunks(const struct iv_avl_node *_a,
@@ -256,26 +341,6 @@ static struct chunk *__find_chunk(struct repomount_file_info *fh,
 	}
 
 	return NULL;
-}
-
-static void __write_chunk(struct repomount_file_info *fh,
-			  struct chunk *c, uint8_t *hash)
-{
-	struct timespec times[2];
-	int copies;
-
-	gcry_md_hash_buffer(hash_algo, hash, c->buf, c->length);
-
-	times[0].tv_sec = 0;
-	times[0].tv_nsec = UTIME_OMIT;
-	times[1].tv_sec = c->last_write.tv_sec;
-	times[1].tv_nsec = c->last_write.tv_nsec;
-
-	copies = reposet_write_chunk(&rs, hash, c->buf, c->length, times);
-	if (copies == 0) {
-		fprintf(stderr, "__write_chunk: no copies written\n");
-		abort();
-	}
 }
 
 static void write_chunk(struct repomount_file_info *fh, struct chunk *c)
@@ -884,16 +949,7 @@ static ssize_t zero_chunk_from(struct repomount_file_info *fh,
 	if (c == NULL && tozero == fh->size_firstchunk) {
 		int ret;
 
-		if (!fh->wrote_empty_chunk) {
-			c = alloca(sizeof(*c) + fh->size_firstchunk);
-			c->chunk_index = chunk_index;
-			c->length = fh->size_firstchunk;
-			clock_gettime(CLOCK_REALTIME, &c->last_write);
-			memset(c->buf, 0, fh->size_firstchunk);
-
-			__write_chunk(fh, c, fh->empty_chunk_hash);
-			fh->wrote_empty_chunk = true;
-		}
+		__check_write_empty_chunk(fh);
 
 		ret = xpwrite(fh->fd, fh->empty_chunk_hash, hash_size,
 			      chunk_index * hash_size);
