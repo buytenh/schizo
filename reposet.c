@@ -194,7 +194,7 @@ static int stat_chunks(const struct reposet *rs, int imagefd, uint64_t size,
 
 	if (numchunks == 0) {
 		*size_p = 0;
-		*size_firstchunk_p = 0;
+		*size_firstchunk_p = 1048576;
 		return 0;
 	}
 
