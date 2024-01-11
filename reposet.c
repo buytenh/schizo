@@ -391,7 +391,7 @@ static int repo_write_file_tmpfile(struct repo *r, int dirfd,
 
 	fd = openat(dirfd, ".", O_RDWR | O_TMPFILE, 0666);
 	if (fd < 0) {
-		if (errno == EOPNOTSUPP)
+		if (errno == EISDIR || errno == EOPNOTSUPP)
 			return -1;
 
 		perror("openat");
