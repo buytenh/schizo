@@ -31,6 +31,7 @@
 #include "rw.h"
 #include "schizo.h"
 #include "threads.h"
+#include "tty.h"
 
 struct chunk {
 	struct iv_avl_node	an;
@@ -321,9 +322,12 @@ static void *write_thread(void *_dummy)
 
 		pthread_mutex_lock(&lock);
 
-		printf("\r%" PRId64 "/%" PRId64 " (block %" PRId64 ")",
-		       ++i, num - num_duplicate - num_removed, c->index);
-		fflush(stdout);
+		if (stderr_is_tty()) {
+			fprintf(stderr,
+                                "\r%" PRId64 "/%" PRId64 " (block %" PRId64 ")",
+			        ++i, num - num_duplicate - num_removed,
+			        c->index);
+		}
 	}
 
 	errors_seen |= err;
@@ -352,7 +356,9 @@ static int cp_splitimage(const char *image, const struct timespec *mtime)
 	errors_seen = 0;
 
 	run_threads(write_thread, NULL, 128);
-	printf("\n");
+	if (stderr_is_tty()) {
+		fprintf(stderr, "\n");
+	}
 
 	if (!errors_seen)
 		reposet_write_image(&rs, image, hashes, num, times);

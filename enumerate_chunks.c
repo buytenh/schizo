@@ -28,6 +28,7 @@
 #include "base64dec.h"
 #include "enumerate_chunks.h"
 #include "threads.h"
+#include "tty.h"
 
 struct repo_scan_state {
 	struct repo		*r;
@@ -147,8 +148,10 @@ static void *repo_scan_thread(void *_rss)
 
 		section = rss->section++;
 
-		printf("scanning %.4x\b\b\b\b\b\b\b\b\b\b\b\b\b", section);
-		fflush(stdout);
+		if (stderr_is_tty()) {
+			fprintf(stderr, "scanning %.4x"
+					"\b\b\b\b\b\b\b\b\b\b\b\b\b", section);
+		}
 
 		pthread_mutex_unlock(&rss->lock);
 		scan_section(rss, st, section);

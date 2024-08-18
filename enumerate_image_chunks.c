@@ -28,6 +28,7 @@
 #include <unistd.h>
 #include "enumerate_image_chunks.h"
 #include "threads.h"
+#include "tty.h"
 
 struct chunk *find_chunk(struct iv_avl_tree *tree,
 			 const uint8_t *hash, int hash_size)
@@ -99,9 +100,10 @@ static void *image_scan_thread(void *_st)
 		im = iv_container_of(st->an, struct image, an);
 		st->an = iv_avl_tree_next(st->an);
 
-		printf("scanning %d/%d %s\r", im->index + 1, st->num_images,
-		       im->path + 1);
-		fflush(stdout);
+		if (stderr_is_tty()) {
+			fprintf(stderr, "scanning %d/%d %s\r",
+				im->index + 1, st->num_images, im->path + 1);
+		}
 
 		pthread_mutex_unlock(&st->lock_images);
 
